@@ -2,138 +2,156 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Manual P2P Live Chat</title>
+<title>Multi-User P2P Chat</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body {
-    margin:0;
+    margin:0; padding:0;
     font-family: Arial, sans-serif;
-    background:#111;
-    color:#00ff88;
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    justify-content:flex-start;
-    height:100vh;
+    background:#111; color:#fff;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:flex-start;
+    min-height:100vh;
 }
-#setup, #chatArea {
-    display:flex;
-    flex-direction:column;
-    gap:10px;
-    margin-top:20px;
-    width:90%;
-    max-width:500px;
+#login, #chat {
+    margin-top:50px;
+    display:flex; flex-direction:column; gap:10px;
 }
 input, button {
-    padding:10px;
-    font-size:16px;
-    border-radius:5px;
-    border:none;
+    padding:10px; font-size:16px; border-radius:5px; border:none;
 }
 button {
-    cursor:pointer;
-    background:#00ff88;
-    color:#000;
-    font-weight:bold;
+    background:#00ff88; color:#000; font-weight:bold; cursor:pointer;
 }
-#chat {
-    margin-top:20px;
-    height:60%;
-    border:2px solid #00ff88;
-    border-radius:5px;
-    padding:10px;
+#chatArea {
+    display:flex; flex-direction:column; gap:5px;
+    margin-top:20px; width:90%; max-width:600px;
+    height:400px; overflow-y:auto; border:1px solid #00ff88; padding:10px;
     background:#000;
-    overflow-y:auto;
 }
 .message {
-    margin:5px 0;
-    padding:6px 10px;
-    border-radius:4px;
-    background:#222;
+    padding:6px 10px; border-radius:5px;
 }
-.message.self {
-    background:#00ff88;
-    color:#000;
-    text-align:right;
+.message.self { background:#00ff88; color:#000; align-self:flex-end; }
+.message.other { background:#333; color:#fff; align-self:flex-start; }
+#messageInput {
+    width:90%; max-width:600px; margin-top:10px; display:flex; gap:5px;
 }
+#messageInput input { flex:1; }
 </style>
 </head>
 <body>
 
-<div id="setup">
+<div id="login">
     <input type="text" id="name" placeholder="Enter Your Name">
-    <input type="text" id="myIdInput" placeholder="Enter Your Chat ID">
-    <input type="text" id="joinId" placeholder="Enter Friend's Chat ID to Join">
-    <button id="startBtn">Start Chat</button>
+    <input type="text" id="roomId" placeholder="Enter Room ID to join">
+    <button id="joinBtn">Join Chat</button>
+    <input type="text" id="newRoomId" placeholder="Enter New Room ID to create">
+    <button id="createBtn">Create New Chat Room</button>
+    <p id="myPeerId">Your Peer ID: -</p>
 </div>
 
-<div id="chatArea" style="display:none;">
-    <p>Your Chat ID: <span id="myChatId">-</span></p>
-    <div id="chat"></div>
-    <div style="display:flex; gap:5px; margin-top:10px;">
-        <input type="text" id="msgInput" placeholder="Type message..." style="flex:1;">
+<div id="chat" style="display:none;">
+    <div id="chatArea"></div>
+    <div id="messageInput">
+        <input type="text" id="msgText" placeholder="Type a message...">
         <button id="sendBtn">Send</button>
     </div>
 </div>
 
-<!-- PeerJS -->
 <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
 <script>
-let peer, conn;
-let chatDiv = document.getElementById('chat');
-let nameInput = document.getElementById('name');
-let msgInput = document.getElementById('msgInput');
+let peer, myId, localName;
+let connections = {}; // key=peerId, value=conn
+let roomIdGlobal = "";
 
-function appendMessage(name, msg, self=true){
+// Initialize Peer
+peer = new Peer(undefined, {
+    host:'0.peerjs.com',
+    port:443,
+    secure:true
+});
+
+peer.on('open', id => {
+    myId = id;
+    document.getElementById('myPeerId').textContent = "Your Peer ID: " + id;
+});
+
+// Handle incoming connections
+peer.on('connection', conn => {
+    conn.on('data', data => handleMessage(conn.peer, data));
+    connections[conn.peer] = conn;
+});
+
+// Send message to all connected peers
+function broadcastMessage(msg) {
+    for(let pid in connections){
+        connections[pid].send(msg);
+    }
+    addMessage(localName, msg, true);
+}
+
+// Display message in chat
+function addMessage(name, msg, self=false){
+    const chatArea = document.getElementById('chatArea');
     const div = document.createElement('div');
-    div.className = 'message' + (self ? ' self' : '');
-    div.innerHTML = `<b>${name}:</b> ${msg}`;
-    chatDiv.appendChild(div);
-    chatDiv.scrollTop = chatDiv.scrollHeight;
+    div.className = 'message ' + (self?'self':'other');
+    div.textContent = name + ": " + msg;
+    chatArea.appendChild(div);
+    chatArea.scrollTop = chatArea.scrollHeight;
 }
 
-// Setup Peer and connection
-function startChat(myId, friendId=null){
-    if(!myId) return alert("Enter your Chat ID first!");
-    peer = new Peer(myId, {host:'0.peerjs.com', port:443, secure:true});
-    document.getElementById('chatArea').style.display = 'flex';
-    document.getElementById('setup').style.display = 'none';
-    document.getElementById('myChatId').textContent = myId;
-
-    peer.on('open', id => {
-        if(friendId){
-            conn = peer.connect(friendId);
-            conn.on('open', () => appendMessage('System', 'Connected to ' + friendId, false));
-            conn.on('data', data => appendMessage(data.name, data.msg, false));
-        }
-    });
-
-    peer.on('connection', c => {
-        conn = c;
-        conn.on('data', data => appendMessage(data.name, data.msg, false));
-        appendMessage('System', 'Friend connected: ' + conn.peer, false);
-    });
+// Handle incoming message
+function handleMessage(peerId, data){
+    addMessage(data.name, data.msg, false);
 }
 
-// Button click: start chat
-document.getElementById('startBtn').addEventListener('click', () => {
-    const myId = document.getElementById('myIdInput').value.trim();
-    const friendId = document.getElementById('joinId').value.trim() || null;
-    startChat(myId, friendId);
+// Connect to a peer
+function connectToPeer(peerId){
+    if(connections[peerId]) return;
+    const conn = peer.connect(peerId);
+    conn.on('open', () => {
+        connections[peerId] = conn;
+        console.log("Connected to", peerId);
+    });
+    conn.on('data', data => handleMessage(conn.peer, data));
+}
+
+// Join room logic
+function joinRoom(roomId){
+    roomIdGlobal = roomId;
+    // Try connecting to existing peers in room (simple: user enters known peer IDs)
+    // For simplicity, we rely on user sharing first peer IDs manually
+    alert("Share your Peer ID with others to join same room!");
+    document.getElementById('login').style.display='none';
+    document.getElementById('chat').style.display='flex';
+}
+
+// Button events
+document.getElementById('joinBtn').addEventListener('click', ()=>{
+    const name = document.getElementById('name').value.trim();
+    const roomId = document.getElementById('roomId').value.trim();
+    if(!name || !roomId) return alert("Enter name and room ID!");
+    localName = name;
+    joinRoom(roomId);
+});
+
+document.getElementById('createBtn').addEventListener('click', ()=>{
+    const name = document.getElementById('name').value.trim();
+    const newRoomId = document.getElementById('newRoomId').value.trim();
+    if(!name || !newRoomId) return alert("Enter name and new room ID!");
+    localName = name;
+    joinRoom(newRoomId);
 });
 
 // Send message
-document.getElementById('sendBtn').addEventListener('click', sendMessage);
-msgInput.addEventListener('keydown', e => { if(e.key==='Enter') sendMessage(); });
-
-function sendMessage(){
+document.getElementById('sendBtn').addEventListener('click', ()=>{
+    const msgInput = document.getElementById('msgText');
     const msg = msgInput.value.trim();
-    if(!msg || !conn || conn.open===false) return;
-    const name = nameInput.value.trim() || "Anon";
-    conn.send({name,msg});
-    appendMessage(name, msg, true);
+    if(!msg) return;
     msgInput.value = '';
-}
+    broadcastMessage({name:localName, msg});
+});
 </script>
 </body>
 </html>
