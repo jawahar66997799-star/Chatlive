@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>P2P Live Chat Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+    margin:0;
+    font-family: Arial, sans-serif;
+    background:#111;
+    color:#00ff88;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:flex-start;
+    height:100vh;
+}
+#setup, #chatArea {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    margin-top:20px;
+    width:90%;
+    max-width:500px;
+}
+input, button {
+    padding:10px;
+    font-size:16px;
+    border-radius:5px;
+    border:none;
+}
+button {
+    cursor:pointer;
+    background:#00ff88;
+    color:#000;
+    font-weight:bold;
+}
+#chat {
+    margin-top:20px;
+    height:60%;
+    border:2px solid #00ff88;
+    border-radius:5px;
+    padding:10px;
+    background:#000;
+    overflow-y:auto;
+}
+.message {
+    margin:5px 0;
+    padding:6px 10px;
+    border-radius:4px;
+    background:#222;
+}
+.message.self {
+    background:#00ff88;
+    color:#000;
+    text-align:right;
+}
+</style>
+</head>
+<body>
+
+<div id="setup">
+    <input type="text" id="name" placeholder="Enter Your Name">
+    <input type="text" id="joinId" placeholder="Enter Friend's Chat ID to Join">
+    <button id="joinBtn">Join Chat</button>
+    <button id="newBtn">Create New Chat ID</button>
+    <p id="newIdDisplay"></p>
+</div>
+
+<div id="chatArea" style="display:none;">
+    <p>Your Chat ID: <span id="myChatId">-</span></p>
+    <div id="chat"></div>
+    <div style="display:flex; gap:5px; margin-top:10px;">
+        <input type="text" id="msgInput" placeholder="Type message..." style="flex:1;">
+        <button id="sendBtn">Send</button>
+    </div>
+</div>
+
+<!-- PeerJS -->
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+let peer, conn;
+let chatDiv = document.getElementById('chat');
+let nameInput = document.getElementById('name');
+let msgInput = document.getElementById('msgInput');
+
+function appendMessage(name, msg, self=true){
+    const div = document.createElement('div');
+    div.className = 'message' + (self ? ' self' : '');
+    div.innerHTML = `<b>${name}:</b> ${msg}`;
+    chatDiv.appendChild(div);
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+}
+
+// Generate random ID
+function randomId(length=6){
+    return Math.random().toString(36).substring(2,length+2).toUpperCase();
+}
+
+// Setup Peer and connection
+function startChat(myId, friendId=null){
+    peer = new Peer(myId, {host:'0.peerjs.com', port:443, secure:true});
+    document.getElementById('chatArea').style.display = 'flex';
+    document.getElementById('setup').style.display = 'none';
+    document.getElementById('myChatId').textContent = myId;
+
+    peer.on('open', id => {
+        if(friendId){
+            conn = peer.connect(friendId);
+            conn.on('open', () => appendMessage('System', 'Connected to ' + friendId, false));
+            conn.on('data', data => appendMessage(data.name, data.msg, false));
+        }
+    });
+
+    peer.on('connection', c => {
+        conn = c;
+        conn.on('data', data => appendMessage(data.name, data.msg, false));
+        appendMessage('System', 'Friend connected: ' + conn.peer, false);
+    });
+}
+
+// Buttons
+document.getElementById('newBtn').addEventListener('click', () => {
+    const id = randomId(6);
+    document.getElementById('newIdDisplay').textContent = 'Your new Chat ID: ' + id;
+    startChat(id);
+});
+
+document.getElementById('joinBtn').addEventListener('click', () => {
+    const friendId = document.getElementById('joinId').value.trim();
+    if(!friendId) return alert("Enter Friend's Chat ID to join");
+    const myId = randomId(6);
+    startChat(myId, friendId);
+});
+
+// Send message
+document.getElementById('sendBtn').addEventListener('click', sendMessage);
+msgInput.addEventListener('keydown', e => { if(e.key==='Enter') sendMessage(); });
+
+function sendMessage(){
+    const msg = msgInput.value.trim();
+    if(!msg || !conn || conn.open===false) return;
+    const name = nameInput.value.trim() || "Anon";
+    conn.send({name,msg});
+    appendMessage(name, msg, true);
+    msgInput.value = '';
+}
+</script>
+</body>
+</html>
