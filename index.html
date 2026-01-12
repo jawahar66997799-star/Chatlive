@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>P2P Live Chat Setup</title>
+<title>Manual P2P Live Chat</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body {
@@ -62,10 +62,9 @@ button {
 
 <div id="setup">
     <input type="text" id="name" placeholder="Enter Your Name">
+    <input type="text" id="myIdInput" placeholder="Enter Your Chat ID">
     <input type="text" id="joinId" placeholder="Enter Friend's Chat ID to Join">
-    <button id="joinBtn">Join Chat</button>
-    <button id="newBtn">Create New Chat ID</button>
-    <p id="newIdDisplay"></p>
+    <button id="startBtn">Start Chat</button>
 </div>
 
 <div id="chatArea" style="display:none;">
@@ -93,13 +92,9 @@ function appendMessage(name, msg, self=true){
     chatDiv.scrollTop = chatDiv.scrollHeight;
 }
 
-// Generate random ID
-function randomId(length=6){
-    return Math.random().toString(36).substring(2,length+2).toUpperCase();
-}
-
 // Setup Peer and connection
 function startChat(myId, friendId=null){
+    if(!myId) return alert("Enter your Chat ID first!");
     peer = new Peer(myId, {host:'0.peerjs.com', port:443, secure:true});
     document.getElementById('chatArea').style.display = 'flex';
     document.getElementById('setup').style.display = 'none';
@@ -120,17 +115,10 @@ function startChat(myId, friendId=null){
     });
 }
 
-// Buttons
-document.getElementById('newBtn').addEventListener('click', () => {
-    const id = randomId(6);
-    document.getElementById('newIdDisplay').textContent = 'Your new Chat ID: ' + id;
-    startChat(id);
-});
-
-document.getElementById('joinBtn').addEventListener('click', () => {
-    const friendId = document.getElementById('joinId').value.trim();
-    if(!friendId) return alert("Enter Friend's Chat ID to join");
-    const myId = randomId(6);
+// Button click: start chat
+document.getElementById('startBtn').addEventListener('click', () => {
+    const myId = document.getElementById('myIdInput').value.trim();
+    const friendId = document.getElementById('joinId').value.trim() || null;
     startChat(myId, friendId);
 });
 
