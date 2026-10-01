@@ -1,0 +1,89 @@
+name: JLS Workstream 4 Comparative E5CB
+
+on:
+  push:
+    branches:
+      - workstream-4-comparative-121e
+  workflow_dispatch:
+
+jobs:
+  comparative-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run all requested comparative scenarios
+        run: |
+          python3 -m py_compile tools/benchmark/jls_architecture_compare.py
+          python3 tools/benchmark/jls_architecture_compare.py \
+            --samples 5000 \
+            --json-out /tmp/jls-architecture-comparison.json \
+            --md-out /tmp/jls-architecture-comparison.md
+          cat /tmp/jls-architecture-comparison.md
+
+      - name: Assert current JLS benchmark assumptions
+        run: |
+          grep -q 'MaxGuests:    envInt("JLS_MAX_GUESTS", 250)' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MS", 400' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MIN_MS", 150' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MAX_MS", 1000' relay/main.go
+          grep -q 'JLS_DELAY_UP_US_PER_SEC", 250' relay/main.go
+          grep -q 'JLS_DELAY_DOWN_US_PER_SEC", 150' relay/main.go
+          grep -q 'roomDNeedsAuthoritativeSnap=true' relay/web/player.js
+          grep -q 'roomD.reset(ms,performance.now())' relay/web/player.js
+          grep -q "suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000})" relay/web/player.js
+          grep -q 'targetBitrateBps: Int = 144_000' app/src/main/java/com/jawahar/livesync/OpusEncoderEngine.kt
+          grep -q 'setUseInbandFEC(false)' app/src/main/java/com/jawahar/livesync/OpusEncoderEngine.kt
+          grep -q 'PipelineDiagnosticEvaluator' app/src/main/java/com/jawahar/livesync/PipelineDiagnostics.kt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-comparative-121e
+          path: |
+            /tmp/jls-architecture-comparison.json
+            /tmp/jls-architecture-comparison.md
+          if-no-files-found: error
+
+  inherited-system-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Current guest deterministic tests
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/pipeline-state.test.mjs
+          node relay/web/tests/assets.test.mjs
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: false
+
+      - name: Current relay tests
+        working-directory: relay
+        run: |
+          go mod tidy
+          go test ./...
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android SDK 36
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Current Android unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
