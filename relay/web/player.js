@@ -7,7 +7,7 @@ ui.room.textContent=room;
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
-const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:25,downPerSec:6});
+const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
@@ -28,7 +28,7 @@ function startDecoder(){
   if(decoder)return;
   decoder=new Worker('/decoder-worker.js');
   decoder.onmessage=e=>onDecoded(e.data||{});
-  decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});
+  decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});
 }
 startDecoder();
 
@@ -54,11 +54,11 @@ class SabWriter{
 async function ensureAudio(){
   if(audio&&node)return;
   const AC=self.AudioContext||self.webkitAudioContext;if(!AC)throw new Error('Web Audio unsupported');
-  try{audio=new AC({sampleRate:48000,latencyHint:'interactive'})}catch{audio=new AC({latencyHint:'interactive'})}
+  try{if(navigator.audioSession&&'type' in navigator.audioSession)navigator.audioSession.type='playback'}catch{}if(m.type==='state'){\n    hostOnline=!!m.host_online;const tl=m.timeline||{};\n    if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}n  try{audio=new AC({sampleRate:48000,latencyHint:'interactive'})}catch{audio=new AC({latencyHint:'interactive'})}
   await audio.audioWorklet.addModule('/worklet.js');
   node=new AudioWorkletNode(audio,'jawahar-sync-processor',{numberOfOutputs:1,outputChannelCount:[2]});
   node.connect(audio.destination);node.port.onmessage=e=>onWorklet(e.data||{});
-  node.port.postMessage({type:'config',sourceRate:sampleRate,hardResyncMs:100,maxPpm:350,deadbandMs:1});
+  node.port.postMessage({type:'config',sourceRate:sampleRate,hardResyncMs:100,maxPpm:300,deadbandMs:1});
   if(self.crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'){try{sabWriter=new SabWriter(node)}catch{sabWriter=null}}
   metrics.audioState=audio.state;sampleOutputClock();
   audio.addEventListener('statechange',()=>{
@@ -111,14 +111,14 @@ function onControl(text){
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
     if(tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;roomD.setTarget(ms);if(roomD.lastMs==null){roomD.current=roomD.target;roomD.lastMs=performance.now()}}
-    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
+    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline||m.reason==='host_offline'){resetPlayout('host-offline');setState('Host offline','bad')}else setState(joined?'Buffering…':'Host online',joined?'warn':'ok');
     return;
   }
   if(m.type==='hello'){
     hostOnline=!!m.hostOnline;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.current=roomD.target=d;roomD.lastMs=performance.now();
-    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
+    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     setState(hostOnline?(joined?'Buffering…':'Host online'):'Host offline',hostOnline?'ok':'bad');
     return;
   }
@@ -153,7 +153,7 @@ function onDecoded(m){
   if(hostOnline&&audio.state==='running')setState('Listening','ok');
 }
 
-function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
+function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0&&Number.isFinite(b)&&b>0)return Math.max(o,b);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
 function sampleOutputClock(){
   if(!audio)return;
   try{if(typeof audio.getOutputTimestamp==='function'){const t=audio.getOutputTimestamp();if(Number.isFinite(t?.performanceTime)&&t.performanceTime>0&&Number.isFinite(t?.contextTime))outputMap.add({performanceTimeMs:t.performanceTime,contextTimeSec:t.contextTime})}}catch{}
