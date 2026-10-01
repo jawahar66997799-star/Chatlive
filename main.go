@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -225,6 +226,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -233,6 +236,7 @@ func serveWeb(w http.ResponseWriter, r *http.Request) {
 	sub, _ := fs.Sub(webFS, "web")
 	name := "index.html"
 	contentType := "text/html; charset=utf-8"
+
 	switch r.URL.Path {
 	case "/worklet.js":
 		name, contentType = "worklet.js", "text/javascript; charset=utf-8"
@@ -242,10 +246,32 @@ func serveWeb(w http.ResponseWriter, r *http.Request) {
 		name, contentType = "decoder-worker.js", "text/javascript; charset=utf-8"
 	case "/sync-core.mjs":
 		name, contentType = "sync-core.mjs", "text/javascript; charset=utf-8"
+	default:
+		if strings.HasPrefix(r.URL.Path, "/vendor/libopus-wasm/") {
+			rel := strings.TrimPrefix(r.URL.Path, "/")
+			if !fs.ValidPath(rel) || !strings.HasPrefix(rel, "vendor/libopus-wasm/") {
+				http.NotFound(w, r)
+				return
+			}
+			name = rel
+			switch path.Ext(name) {
+			case ".js", ".mjs":
+				contentType = "text/javascript; charset=utf-8"
+			case ".wasm":
+				contentType = "application/wasm"
+			case ".json":
+				contentType = "application/json; charset=utf-8"
+			case ".txt":
+				contentType = "text/plain; charset=utf-8"
+			default:
+				contentType = "application/octet-stream"
+			}
+		}
 	}
+
 	b, err := fs.ReadFile(sub, name)
 	if err != nil {
-		http.Error(w, "guest player asset unavailable", 500)
+		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("content-type", contentType)
