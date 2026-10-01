@@ -204,7 +204,7 @@ function connect(force=false){
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline&&joined?'Listening':(hostOnline?'Host online':'Connected'),'ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1500);startTransportWatchdog()};
+  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline&&joined?'Listening':(hostOnline?'Host online':'Connected'),'ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);startTransportWatchdog()};
   ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
   ws.onclose=()=>{
     if(gen!==generation)return;
@@ -231,7 +231,7 @@ function startTransportWatchdog(){
     // Clock replies arrive every ~1.5 s even during silence. If the socket goes
     // half-open across Wi-Fi/cellular handover, replace it proactively instead
     // of waiting for the browser/TCP timeout.
-    if(relayAge>5500){
+    if(relayAge>3500){
       metrics.transportWatchdogReconnects++;metrics.selfHeals++;
       note('Transport stalled; reconnecting automatically at the live edge.');
       connect(true);
@@ -579,7 +579,17 @@ function resumeVisible(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
-window.addEventListener('online',()=>connect(true));window.addEventListener('offline',()=>setState('Network offline','bad'));
+window.addEventListener('online',()=>connect(true));
+window.addEventListener('offline',()=>setState('Network offline','bad'));
+try{
+  navigator.connection?.addEventListener?.('change',()=>{
+    // A Wi-Fi/cellular route change can leave an apparently-open TCP socket
+    // stranded on the old path. Replace it immediately and resume from the
+    // bounded relay ring instead of waiting for the OS TCP timeout.
+    if(ws?.readyState===WebSocket.OPEN)connect(true);
+    else connect();
+  });
+}catch{}
 try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
 
 function sendStats(){
