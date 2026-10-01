@@ -45,3 +45,41 @@ jobs:
         env:
           JLS_RELAY_BIN: /tmp/jls-relay
         run: python relay/web/tests/browser-playout.e2e.py
+
+  engine-compat-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install compatibility browser/audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopus0
+          python -m pip install --upgrade pip
+          python -m pip install playwright websockets opuslib
+          python -m playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Build relay
+        working-directory: relay
+        run: |
+          GOTOOLCHAIN=local GOFLAGS=-mod=readonly go build -trimpath -o /tmp/jls-relay .
+
+      - name: Run browser engine transport + Opus decode smoke
+        env:
+          JLS_RELAY_BIN: /tmp/jls-relay
+          JLS_BROWSER: ${{ matrix.browser }}
+        run: python relay/web/tests/browser-compat.e2e.py
