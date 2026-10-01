@@ -115,7 +115,8 @@ assert.match(player,/metrics\.continuityState=continuity\.code/);
 assert.match(core,/return stateResult\(S\.PLAYING,S\.PLAYING/);
 assert.match(player,/outputAudible:\(lastAudibleOutputAt/);
 assert.match(player,/metrics\.outputPeakDb>-90\|\|metrics\.outputRmsDb>-90/);
-assert.match(player,/AudioContext\.running is the browser's authoritative proof/);
+assert.match(player,/function repairJoinState\(\)[\s\S]*audio\.state!=='running'[\s\S]*joined=true/,
+  'running AudioContext must be able to repair a stale join flag');
 assert.doesNotMatch(player,/if\s*\(!joined\)\s*\{\s*metrics\.playoutGate='waiting for audio join';\s*return;/);
 
 assert.doesNotMatch(player,/decoder\?\.postMessage\(\{type:'reset'\}\)/,
