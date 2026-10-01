@@ -54,7 +54,8 @@ class SabWriter{
 async function ensureAudio(){
   if(audio&&node)return;
   const AC=self.AudioContext||self.webkitAudioContext;if(!AC)throw new Error('Web Audio unsupported');
-  try{if(navigator.audioSession&&'type' in navigator.audioSession)navigator.audioSession.type='playback'}catch{}if(m.type==='state'){\n    hostOnline=!!m.host_online;const tl=m.timeline||{};\n    if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}n  try{audio=new AC({sampleRate:48000,latencyHint:'interactive'})}catch{audio=new AC({latencyHint:'interactive'})}
+  try{if(navigator.audioSession&&'type' in navigator.audioSession)navigator.audioSession.type='playback'}catch{}
+  try{audio=new AC({sampleRate:48000,latencyHint:'interactive'})}catch{audio=new AC({latencyHint:'interactive'})}
   await audio.audioWorklet.addModule('/worklet.js');
   node=new AudioWorkletNode(audio,'jawahar-sync-processor',{numberOfOutputs:1,outputChannelCount:[2]});
   node.connect(audio.destination);node.port.onmessage=e=>onWorklet(e.data||{});
@@ -112,6 +113,7 @@ function onControl(text){
   }
   if(m.type==='state'){
     hostOnline=!!m.host_online;const tl=m.timeline||{};
+    if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
     if(tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;roomD.setTarget(ms);if(roomD.lastMs==null){roomD.current=roomD.target;roomD.lastMs=performance.now()}}
