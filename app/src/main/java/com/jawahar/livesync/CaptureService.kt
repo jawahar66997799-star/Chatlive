@@ -437,7 +437,6 @@ class CaptureService : Service() {
                             captureMonoNs = frame.captureMonoNs,
                             samplePosition = frame.samplePosition,
                             sampleCount = frame.sampleCount,
-                            bitrateBps = TARGET_BITRATE,
                             flags = flags,
                             payload = encoded.payload
                         ),
