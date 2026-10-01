@@ -2,8 +2,8 @@ import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,targ
 
 const q=s=>document.querySelector(s);
 const ui={room:q('#room'),state:q('#state'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
-const room=location.pathname.startsWith('/r/')?decodeURIComponent(location.pathname.slice(3)):(new URLSearchParams(location.search).get('room')||'753951');
-ui.room.textContent=room;
+const room=location.pathname.startsWith('/r/')?decodeURIComponent(location.pathname.slice(3)):(new URLSearchParams(location.search).get('room')||'');
+ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'private room'):'invalid link';
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
@@ -75,6 +75,7 @@ function resetPlayout(reason){
 
 function connect(force=false){
   clearTimeout(reconnectTimer);
+  if(!room){setState('Invalid guest link','bad');note('Ask the host for a fresh Jawahar Live Sync link.');ui.join.disabled=true;return;}
   if(!force&&ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;
   if(force&&ws){try{ws.close(4001,'refresh transport')}catch{}}
   generation++;const gen=generation;
