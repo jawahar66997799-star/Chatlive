@@ -64,7 +64,9 @@ class CaptureService : Service() {
     private val running = AtomicBoolean(false)
     private val recoveryRequested = AtomicBoolean(false)
     private val lastGoodReadNs = AtomicLong(0)
-    private val encoderQueue = ArrayBlockingQueue<PcmFrame>(12)
+    private val lastPcmFrameNs = AtomicLong(0)
+    private val lastEncodedNs = AtomicLong(0)
+    private val encoderQueue = ArrayBlockingQueue<PcmFrame>(8)
     private val pendingDiscontinuity = AtomicBoolean(false)
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "JlsCaptureWatchdog").apply { isDaemon = true }
@@ -94,6 +96,10 @@ class CaptureService : Service() {
     @Volatile private var relayRttMs: Long? = null
     @Volatile private var reconnects = 0
     @Volatile private var sendBufferDepth = 0
+    @Volatile private var webSocketQueueBytes = 0L
+    @Volatile private var lastSendAgeMs: Long? = null
+    @Volatile private var lastRelayControlAgeMs: Long? = null
+    @Volatile private var relayResumeAfterSequence = 0L
     @Volatile private var droppedFrames = 0L
     @Volatile private var projectionStops = 0
     @Volatile private var thermalStatus = 0
@@ -262,6 +268,10 @@ class CaptureService : Service() {
                     relayRttMs = metrics.relayRttMs
                     reconnects = metrics.reconnects
                     sendBufferDepth = metrics.sendBufferDepth
+                    webSocketQueueBytes = metrics.webSocketQueueBytes
+                    lastSendAgeMs = metrics.lastSendAgeMs
+                    lastRelayControlAgeMs = metrics.lastRelayControlAgeMs
+                    relayResumeAfterSequence = metrics.resumeAfterSequence
                     droppedFrames = max(droppedFrames, metrics.droppedFrames)
                 }
             }
@@ -318,9 +328,11 @@ class CaptureService : Service() {
 
     private fun captureLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-        val buffer = ByteArray(16_384)
+        val frameBytes = SAMPLE_RATE * CHANNELS * 2 * FRAME_MS / 1000
+        val buffer = ByteArray(frameBytes)
         val accumulator = PcmFrameAccumulator(SAMPLE_RATE, CHANNELS, FRAME_MS)
         var silentSinceNs: Long? = null
+        var consecutiveZeroReads = 0
         var lastReportNs = startedNs
 
         while (running.get()) {
@@ -342,12 +354,24 @@ class CaptureService : Service() {
 
             if (n <= 0) {
                 readFaults++
-                if (n == AudioRecord.ERROR_DEAD_OBJECT || n == AudioRecord.ERROR_INVALID_OPERATION) {
+                consecutiveZeroReads++
+                val noReadForNs = now - lastGoodReadNs.get()
+                if (n < 0 ||
+                    n == AudioRecord.ERROR_DEAD_OBJECT ||
+                    n == AudioRecord.ERROR_INVALID_OPERATION ||
+                    (consecutiveZeroReads >= 3 && noReadForNs >= 750_000_000L)
+                ) {
+                    sourceHealth = CaptureHealth.CAPTURE_STALLED
                     recoveryRequested.set(true)
+                    publishSnapshot(
+                        "CAPTURE stalled: AudioRecord returned " + n +
+                            " for " + consecutiveZeroReads + " consecutive reads; recorder recovery requested."
+                    )
                 }
                 continue
             }
 
+            consecutiveZeroReads = 0
             lastGoodReadNs.set(now)
             framesCaptured += n / (CHANNELS * 2)
 
@@ -371,6 +395,7 @@ class CaptureService : Service() {
             }
 
             accumulator.push(buffer, n, now) { frame ->
+                lastPcmFrameNs.set(SystemClock.elapsedRealtimeNanos())
                 if (!encoderQueue.offer(frame)) {
                     encoderQueue.poll()
                     droppedFrames++
@@ -424,6 +449,7 @@ class CaptureService : Service() {
                     val encoded = encoder.encode(frame)
                     encodeTimeUs = encoded.encodeTimeUs
                     packetsEncoded++
+                    lastEncodedNs.set(SystemClock.elapsedRealtimeNanos())
                     bitrateWindowBytes += encoded.payload.size
 
                     val now = SystemClock.elapsedRealtimeNanos()
@@ -468,13 +494,20 @@ class CaptureService : Service() {
         if (!running.get() || projectionStopped) return
         val now = SystemClock.elapsedRealtimeNanos()
         val last = lastGoodReadNs.get()
-        if (last > 0 && now - last > 2_000_000_000L && recoveryRequested.compareAndSet(false, true)) {
+        if (last > 0 && now - last > 1_200_000_000L && recoveryRequested.compareAndSet(false, true)) {
             sourceHealth = CaptureHealth.CAPTURE_STALLED
-            publishSnapshot("AudioRecord produced no PCM for more than 2 seconds; restarting the recorder.")
+            publishSnapshot("CAPTURE stalled: AudioRecord produced no PCM for more than 1.2 seconds; restarting recorder.")
             try {
                 recorder?.stop()
             } catch (_: Throwable) {
             }
+        }
+
+        if (encoderThread?.isAlive == false && running.get()) {
+            pendingDiscontinuity.set(true)
+            encoderQueue.clear()
+            publishSnapshot("ENCODER worker stopped unexpectedly; restarting encoder worker.")
+            startEncoderThread()
         }
     }
 
@@ -565,7 +598,35 @@ class CaptureService : Service() {
     }
 
     private fun publishSnapshot(detailOverride: String = ""): CaptureSnapshot {
-        val detail = if (relayState in setOf(
+        val now = SystemClock.elapsedRealtimeNanos()
+        fun ageMs(timestampNs: Long): Long? =
+            timestampNs.takeIf { it > 0 }?.let { ((now - it).coerceAtLeast(0L)) / 1_000_000L }
+
+        val runningAgeMs = if (startedNs == 0L) 0L else
+            (now - startedNs).coerceAtLeast(0L) / 1_000_000L
+        val lastReadAge = ageMs(lastGoodReadNs.get())
+        val lastPcmAge = ageMs(lastPcmFrameNs.get())
+        val lastEncodedAge = ageMs(lastEncodedNs.get())
+
+        val pipeline = PipelineDiagnosticEvaluator.evaluate(
+            PipelineDiagnosticInputs(
+                running = running.get(),
+                projectionStopped = projectionStopped,
+                captureHealth = sourceHealth,
+                runningAgeMs = runningAgeMs,
+                lastReadAgeMs = lastReadAge,
+                lastPcmFrameAgeMs = lastPcmAge,
+                lastEncodedAgeMs = lastEncodedAge,
+                encoderQueueDepth = encoderQueue.size,
+                uplinkQueueDepth = sendBufferDepth,
+                webSocketQueueBytes = webSocketQueueBytes,
+                relayState = relayState,
+                lastSendAgeMs = lastSendAgeMs,
+                lastRelayControlAgeMs = lastRelayControlAgeMs
+            )
+        )
+
+        val baseDetail = if (relayState in setOf(
                 RelayState.NETWORK_INTERRUPTED,
                 RelayState.RECONNECTING,
                 RelayState.AUTH_FAILED,
@@ -576,15 +637,20 @@ class CaptureService : Service() {
         } else {
             detailOverride.ifBlank { relayDetail }
         }
+        val detail = if (pipeline.brokenStage != null) {
+            pipeline.detail + if (baseDetail.isBlank()) "" else " · " + baseDetail
+        } else {
+            baseDetail.ifBlank { pipeline.detail }
+        }
 
         val snapshot = CaptureSnapshot(
             health = effectiveHealth(),
             captureHealth = sourceHealth,
             relayState = relayState,
+            pipeline = pipeline,
             rmsDb = rmsDb,
             peakDb = peakDb,
-            secondsRunning = if (startedNs == 0L) 0 else
-                (SystemClock.elapsedRealtimeNanos() - startedNs).coerceAtLeast(0) / 1_000_000_000L,
+            secondsRunning = runningAgeMs / 1_000L,
             activePlayback = activePlayback,
             framesCaptured = framesCaptured,
             readFaults = readFaults,
@@ -594,7 +660,14 @@ class CaptureService : Service() {
             encodeTimeUs = encodeTimeUs,
             relayRttMs = relayRttMs,
             reconnects = reconnects,
+            encoderQueueDepth = encoderQueue.size,
             sendBufferDepth = sendBufferDepth,
+            webSocketQueueBytes = webSocketQueueBytes,
+            lastReadAgeMs = lastReadAge,
+            lastPcmFrameAgeMs = lastPcmAge,
+            lastEncodedAgeMs = lastEncodedAge,
+            lastSendAgeMs = lastSendAgeMs,
+            lastRelayControlAgeMs = lastRelayControlAgeMs,
             droppedFrames = droppedFrames,
             projectionStops = projectionStops,
             thermalStatus = thermalStatus,
@@ -630,7 +703,7 @@ class CaptureService : Service() {
             logWriter?.appendLine("# youtube_music=" + packageVersion("com.google.android.apps.youtube.music"))
             logWriter?.appendLine("# protocol=" + JlsProtocol.VERSION + " codec=opus sample_rate=48000 channels=2 frame_ms=" + FRAME_MS + " target_bitrate=" + TARGET_BITRATE + " dtx=false fec=false")
             logWriter?.appendLine("# room=" + relayConfig.room)
-            logWriter?.appendLine("elapsed_ms,health,capture_health,relay_state,rms_dbfs,peak_dbfs,active_playback,frames_captured,read_faults,packets_encoded,bytes_uploaded,bitrate_bps,encode_us,relay_rtt_ms,reconnects,send_buffer_depth,dropped_frames,projection_stops,thermal_status,battery_pct")
+            logWriter?.appendLine("elapsed_ms,health,capture_health,relay_state,broken_stage,pipeline_capture,pipeline_pcm,pipeline_encoder,pipeline_uplink_queue,pipeline_wss,pipeline_relay_ack_state,rms_dbfs,peak_dbfs,active_playback,frames_captured,read_faults,packets_encoded,bytes_uploaded,bitrate_bps,encode_us,relay_rtt_ms,reconnects,encoder_queue_depth,send_buffer_depth,websocket_queue_bytes,last_read_age_ms,last_pcm_age_ms,last_encoded_age_ms,last_send_age_ms,last_relay_control_age_ms,relay_resume_after_sequence,dropped_frames,projection_stops,thermal_status,battery_pct")
             logWriter?.flush()
         }
     }
@@ -646,6 +719,13 @@ class CaptureService : Service() {
                         snapshot.health.name,
                         snapshot.captureHealth.name,
                         snapshot.relayState.name,
+                        snapshot.pipeline.brokenStage?.label ?: "NONE",
+                        snapshot.pipeline.capture.name,
+                        snapshot.pipeline.pcm.name,
+                        snapshot.pipeline.encoder.name,
+                        snapshot.pipeline.uplinkQueue.name,
+                        snapshot.pipeline.wss.name,
+                        snapshot.pipeline.relayAckState.name,
                         String.format(Locale.US, "%.2f", snapshot.rmsDb),
                         String.format(Locale.US, "%.2f", snapshot.peakDb),
                         snapshot.activePlayback,
@@ -657,7 +737,15 @@ class CaptureService : Service() {
                         snapshot.encodeTimeUs,
                         snapshot.relayRttMs ?: -1,
                         snapshot.reconnects,
+                        snapshot.encoderQueueDepth,
                         snapshot.sendBufferDepth,
+                        snapshot.webSocketQueueBytes,
+                        snapshot.lastReadAgeMs ?: -1,
+                        snapshot.lastPcmFrameAgeMs ?: -1,
+                        snapshot.lastEncodedAgeMs ?: -1,
+                        snapshot.lastSendAgeMs ?: -1,
+                        snapshot.lastRelayControlAgeMs ?: -1,
+                        relayResumeAfterSequence,
                         snapshot.droppedFrames,
                         snapshot.projectionStops,
                         snapshot.thermalStatus,
