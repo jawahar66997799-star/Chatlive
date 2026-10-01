@@ -131,12 +131,21 @@ async def main():
                 "() => window.__JLS_METRICS__ && window.__JLS_METRICS__.decodedRmsDb > -60",
                 timeout=10000,
             )
-            first_output_at = time.monotonic()
+            decoded_at = time.monotonic()
+            pre_output = await page.evaluate("() => ({state:window.__JLS_METRICS__.pipelineState, reason:window.__JLS_METRICS__.pipelineReason})")
+            assert pre_output["state"] != "PLAYING", pre_output
             await page.wait_for_function(
                 "() => { const m=window.__JLS_METRICS__; return m && m.audioState==='running' && m.workletAlive && m.workletQuanta>5 && m.scheduledFrames>3 && m.outputRmsDb>-80; }",
                 timeout=12000,
             )
             audible_at = time.monotonic()
+
+            # The visible state must only become PLAYING after rendered non-silent
+            # output evidence, never merely because packets were scheduled.
+            await page.wait_for_function(
+                "() => window.__JLS_METRICS__ && window.__JLS_METRICS__.pipelineState === 'PLAYING'",
+                timeout=5000,
+            )
 
             # Continuity may bootstrap in SAFE LOCAL, but the shared room clock
             # must take over automatically once timing is trustworthy.
@@ -154,13 +163,18 @@ async def main():
             assert metrics["outputRmsDb"] > -80, metrics
             assert metrics["fallbackPlayback"] is False, metrics
             assert metrics["playoutGate"] == "precision scheduled", metrics
+            assert metrics["pipelineState"] == "PLAYING", metrics
+            assert metrics["pipelineReason"], metrics
             assert metrics["schedulerErrors"] == 0, metrics
             assert metrics["workletProcessorErrors"] == 0, metrics
             assert not page_errors, page_errors
             print("BROWSER_PLAYOUT_E2E PASS")
             print(json.dumps({
                 "audioState": metrics["audioState"],
-                "audibleWaitMs": round((audible_at - first_output_at) * 1000, 1),
+                "audibleWaitMs": round((audible_at - decoded_at) * 1000, 1),
+                "preOutputState": pre_output,
+                "pipelineState": metrics["pipelineState"],
+                "pipelineReason": metrics["pipelineReason"],
                 "decodedRmsDb": metrics["decodedRmsDb"],
                 "outputRmsDb": metrics["outputRmsDb"],
                 "scheduledFrames": metrics["scheduledFrames"],
