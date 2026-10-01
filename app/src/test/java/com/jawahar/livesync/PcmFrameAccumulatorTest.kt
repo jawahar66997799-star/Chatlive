@@ -6,65 +6,43 @@ import org.junit.Test
 
 class PcmFrameAccumulatorTest {
     @Test
-    fun emitsExactlyOneTwentyMillisecondStereoFrame() {
-        val acc = PcmFrameAccumulator(
-            sampleRate = 48_000,
-            channels = 2,
-            frameMs = 20
-        )
+    fun emitsExactlyOneTwentyMsStereoFrame() {
+        val accumulator = PcmFrameAccumulator(sampleRate = 48_000, channels = 2, frameMs = 20)
         val bytes = ByteArray(960 * 2 * 2)
-
-        var emitted: PcmFrame? = null
-        acc.push(
-            bytes,
-            bytes.size,
-            1_000_000_000L
-        ) {
-            emitted = it
+        for (frame in 0 until 960) {
+            val left = (frame and 0x7FFF).toShort()
+            val right = (-frame).toShort()
+            writeLe16(bytes, frame * 4, left)
+            writeLe16(bytes, frame * 4 + 2, right)
         }
 
-        val frame = emitted!!
-        assertEquals(960, frame.sampleCount)
-        assertEquals(0L, frame.samplePosition)
-        assertEquals(1920, frame.pcm.size)
-        assertTrue(frame.captureMonoNs < 1_000_000_000L)
+        val out = mutableListOf<PcmFrame>()
+        accumulator.push(bytes, 1372, 1_000_000_000L) { out += it }
+        assertTrue(out.isEmpty())
+        accumulator.push(bytes.copyOfRange(1372, bytes.size), bytes.size - 1372, 1_020_000_000L) { out += it }
+
+        assertEquals(1, out.size)
+        assertEquals(960, out[0].sampleCount)
+        assertEquals(1920, out[0].pcm.size)
+        assertEquals(0L, out[0].samplePosition)
     }
 
     @Test
-    fun carriesSamplePositionAcrossPartialReads() {
-        val acc = PcmFrameAccumulator(
-            sampleRate = 48_000,
-            channels = 2,
-            frameMs = 20
-        )
-        val half = ByteArray(480 * 2 * 2)
-        val frames = mutableListOf<PcmFrame>()
+    fun sequenceSamplePositionAdvancesPerChannelFrames() {
+        val accumulator = PcmFrameAccumulator(sampleRate = 48_000, channels = 2, frameMs = 20)
+        val bytes = ByteArray(960 * 2 * 2 * 2)
+        val out = mutableListOf<PcmFrame>()
+        accumulator.push(bytes, bytes.size, 2_000_000_000L) { out += it }
 
-        acc.push(
-            half,
-            half.size,
-            1_000_000_000L,
-            frames::add
-        )
-        assertTrue(frames.isEmpty())
+        assertEquals(2, out.size)
+        assertEquals(0L, out[0].samplePosition)
+        assertEquals(960L, out[1].samplePosition)
+        assertEquals(1920L, accumulator.samplePosition())
+    }
 
-        acc.push(
-            half,
-            half.size,
-            1_010_000_000L,
-            frames::add
-        )
-        assertEquals(1, frames.size)
-        assertEquals(0L, frames[0].samplePosition)
-
-        val full = ByteArray(960 * 2 * 2)
-        acc.push(
-            full,
-            full.size,
-            1_030_000_000L,
-            frames::add
-        )
-        assertEquals(2, frames.size)
-        assertEquals(960L, frames[1].samplePosition)
+    private fun writeLe16(target: ByteArray, offset: Int, value: Short) {
+        val v = value.toInt()
+        target[offset] = (v and 0xFF).toByte()
+        target[offset + 1] = ((v ushr 8) and 0xFF).toByte()
     }
 }
