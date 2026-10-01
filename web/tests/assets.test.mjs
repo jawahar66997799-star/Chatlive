@@ -154,3 +154,12 @@ assert.doesNotMatch(
 );
 assert.match(player,/buffered audio is preserved while reconnecting automatically/);
 assert.match(player,/backoff=Math\.min\(2000/);
+
+// Continuity-first regression guards.
+
+assert.match(player,/directNextTime=now\+\.700/);
+assert.match(player,/relayAge>3500/);
+assert.match(player,/setInterval\(sendClock,1000\)/);
+assert.match(player,/navigator\.connection\?\.addEventListener\?\.\('change'/);
+assert.match(player,/healthyOutput\?'Listening':'Preparing audio…'/);
+assert.doesNotMatch(player,/else setState\(joined\?'Buffering…':'Host online'/);
