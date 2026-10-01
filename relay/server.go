@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,16 +14,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
+var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  16 * 1024,
 	WriteBufferSize: 16 * 1024,
-	CheckOrigin:     func(*http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Native Android host and non-browser test clients generally omit Origin.
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return strings.EqualFold(u.Host, r.Host)
+	},
 }
 
-func remoteIP(r *http.Request) string {
-	// Railway supplies X-Forwarded-For. Trust only the left-most value from the platform proxy path.
-	if x := r.Header.Get("X-Forwarded-For"); x != "" {
-		return strings.TrimSpace(strings.Split(x, ",")[0])
+func clientIP(r *http.Request) string {
+	// Railway terminates TLS at a trusted reverse proxy and supplies X-Forwarded-For.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+			return first
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
@@ -31,93 +45,120 @@ func remoteIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (s *Server) acquireWS(w http.ResponseWriter, r *http.Request) (string, bool) {
-	ip := remoteIP(r)
+func (s *Server) acquireIP(w http.ResponseWriter, r *http.Request) (string, bool) {
+	ip := clientIP(r)
 	if !s.ip.acquire(ip) {
 		http.Error(w, "connection quota exceeded", http.StatusTooManyRequests)
-		return ip, false
+		return "", false
 	}
 	return ip, true
 }
 
 func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
-	ip, ok := s.acquireWS(w, r)
+	ip, ok := s.acquireIP(w, r)
 	if !ok {
 		return
 	}
 	defer s.ip.release(ip)
 
-	c, err := upgrader.Upgrade(w, r, nil)
+	c, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer c.Close()
+
 	c.SetReadLimit(s.cfg.MaxMessage)
-	_ = c.SetReadDeadline(time.Now().Add(8 * time.Second))
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	mt, data, err := c.ReadMessage()
 	if err != nil || mt != websocket.TextMessage {
 		s.metrics.malformedMessages.Add(1)
-		writeClose(c, 1002, "hello_host required")
+		writeClose(c, 1008, "hello_host required")
 		return
 	}
 	var hello HostHello
-	if json.Unmarshal(data, &hello) != nil || validateHostHello(&hello) != nil {
+	if err := json.Unmarshal(data, &hello); err != nil || validateHostHello(&hello) != nil {
 		s.metrics.malformedMessages.Add(1)
-		_ = c.WriteMessage(websocket.TextMessage, protocolError("BAD_HELLO", "invalid hello_host", false))
-		writeClose(c, 1002, "bad hello")
+		_ = c.WriteMessage(websocket.TextMessage, protocolError("bad_hello", "invalid hello_host", false))
+		writeClose(c, 1008, "invalid hello_host")
 		return
 	}
 	if !s.room.authHost(hello.RoomID, hello.HostSecret) {
 		s.metrics.authFailures.Add(1)
-		_ = c.WriteMessage(websocket.TextMessage, protocolError("AUTH_FAILED", "host authentication failed", false))
-		writeClose(c, 1008, "auth failed")
+		_ = c.WriteMessage(websocket.TextMessage, protocolError("unauthorized", "host authentication failed", false))
+		writeClose(c, 1008, "unauthorized")
 		return
 	}
 
-	gen, resumeAfter, epochChanged, err := s.room.beginHost(hello)
+	generation, resumeAfter, epochChanged, err := s.room.beginHost(hello)
 	if err != nil {
-		_ = c.WriteMessage(websocket.TextMessage, protocolError("HOST_BUSY", err.Error(), true))
+		_ = c.WriteMessage(websocket.TextMessage, protocolError("host_conflict", err.Error(), true))
 		writeClose(c, 1013, "host already connected")
 		return
 	}
+	defer s.room.endHost(generation)
 	s.metrics.hostConnections.Add(1)
-	defer s.room.endHost(gen)
 
-	_ = c.SetReadDeadline(time.Now().Add(45 * time.Second))
-	c.SetPongHandler(func(string) error { return c.SetReadDeadline(time.Now().Add(45 * time.Second)) })
-	_ = c.WriteJSON(map[string]any{
-		"type": "welcome_host", "v": protocolVersion, "server_now_ns": serverNS(),
-		"epoch": hello.Epoch, "resume_after_seq": resumeAfter, "epoch_changed": epochChanged,
-		"max_payload_bytes": s.cfg.MaxPayload, "ring_ms": s.cfg.RingDuration.Milliseconds(),
-	})
+	_ = c.SetReadDeadline(time.Time{})
+	ack := map[string]any{
+		"type":                  "hello_host_ack",
+		"v":                     protocolVersion,
+		"room_id":               hello.RoomID,
+		"epoch":                 hello.Epoch,
+		"resume_after_sequence": resumeAfter,
+		"epoch_changed":         epochChanged,
+		"server_now_ns":         serverNS(),
+		"recommended_delay_ns":  uint64(s.cfg.CommonDelay.Nanoseconds()),
+		"max_payload_bytes":     s.cfg.MaxPayload,
+	}
+	if err := c.WriteMessage(websocket.TextMessage, encodeJSON(ack)); err != nil {
+		return
+	}
 	s.room.broadcastState("host_online")
-	log.Printf("host online epoch=%d resume_after=%d ip=%s", hello.Epoch, resumeAfter, ip)
+	log.Printf("host connected ip=%s epoch=%d resume_after=%d", ip, hello.Epoch, resumeAfter)
 
 	for {
-		mt, data, err = c.ReadMessage()
+		mt, data, err := c.ReadMessage()
+		t1 := serverNS()
 		if err != nil {
 			return
 		}
 		switch mt {
 		case websocket.BinaryMessage:
-			f, parseErr := parseAudioFrame(data, s.cfg.MaxPayload)
-			if parseErr != nil {
+			frame, err := parseAudioFrame(data, s.cfg.MaxPayload)
+			if err != nil {
 				s.metrics.malformedMessages.Add(1)
-				_ = c.WriteMessage(websocket.TextMessage, protocolError("BAD_AUDIO", parseErr.Error(), false))
+				_ = c.WriteMessage(websocket.TextMessage, protocolError("bad_audio_frame", err.Error(), false))
 				continue
 			}
-			if err := s.room.acceptFrame(f, serverNS()); err != nil {
-				_ = c.WriteMessage(websocket.TextMessage, protocolError("FRAME_REJECTED", err.Error(), false))
+			if err := s.room.acceptFrame(frame, t1); err != nil {
+				_ = c.WriteMessage(websocket.TextMessage, protocolError("audio_rejected", err.Error(), true))
 			}
 		case websocket.TextMessage:
-			var ctl HostControl
-			if json.Unmarshal(data, &ctl) != nil || ctl.V != protocolVersion {
+			var m HostControl
+			if err := json.Unmarshal(data, &m); err != nil || m.V != protocolVersion {
 				s.metrics.malformedMessages.Add(1)
 				continue
 			}
-			if ctl.Type == "ping" {
-				_ = c.WriteJSON(map[string]any{"type": "pong", "v": protocolVersion, "id": ctl.ID, "t0_ns": ctl.T0NS, "server_ns": serverNS()})
+			switch m.Type {
+			case "clock_req":
+				t2 := serverNS()
+				s.metrics.clockRequests.Add(1)
+				resp := map[string]any{
+					"type":         "clock_resp",
+					"v":            protocolVersion,
+					"id":           m.ID,
+					"t0_guest_ns":  m.T0NS,
+					"t1_server_ns": t1,
+					"t2_server_ns": t2,
+				}
+				if err := c.WriteMessage(websocket.TextMessage, encodeJSON(resp)); err != nil {
+					return
+				}
+			case "host_state":
+				// State is telemetry only. Epoch/sequence/timeline are relay-authoritative.
+			default:
+				s.metrics.malformedMessages.Add(1)
 			}
 		default:
 			s.metrics.malformedMessages.Add(1)
@@ -125,63 +166,63 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) legacyGuestWS(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("room")
-	s.handleGuestWS(token, w, r)
-}
-
 func (s *Server) guestWS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/v1/ws/guest/")
-	s.handleGuestWS(token, w, r)
+	s.serveGuestWS(w, r, token)
 }
 
-func (s *Server) handleGuestWS(token string, w http.ResponseWriter, r *http.Request) {
+func (s *Server) legacyGuestWS(w http.ResponseWriter, r *http.Request) {
+	s.serveGuestWS(w, r, r.URL.Query().Get("room"))
+}
+
+func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token string) {
 	if !s.room.authGuest(token) {
 		s.metrics.authFailures.Add(1)
-		http.Error(w, "guest token invalid", http.StatusUnauthorized)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	ip, ok := s.acquireWS(w, r)
+	ip, ok := s.acquireIP(w, r)
 	if !ok {
 		return
 	}
 	defer s.ip.release(ip)
 
-	c, err := upgrader.Upgrade(w, r, nil)
+	c, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-	c.SetReadLimit(16 * 1024)
-	_ = c.SetReadDeadline(time.Now().Add(60 * time.Second))
-	c.SetPongHandler(func(string) error { return c.SetReadDeadline(time.Now().Add(60 * time.Second)) })
-
-	g := &guestConn{id: s.guestID.Add(1), conn: c, send: make(chan outbound, 512)}
+	g := &guestConn{
+		id:   s.guestID.Add(1),
+		conn: c,
+		send: make(chan outbound, 1024),
+	}
 	defer func() {
 		g.closed.Store(true)
 		s.room.removeGuest(g)
 		_ = c.Close()
 	}()
 
+	c.SetReadLimit(64 * 1024)
 	var resumeEpoch, resumeSeq uint64
-	hasResume := false
-	if qe, qs := r.URL.Query().Get("resume_epoch"), r.URL.Query().Get("resume_seq"); qe != "" && qs != "" {
-		e, eErr := strconv.ParseUint(qe, 10, 64)
-		q, qErr := strconv.ParseUint(qs, 10, 64)
-		if eErr == nil && qErr == nil {
-			resumeEpoch, resumeSeq, hasResume = e, q, true
+	var hasResume bool
+	if ev, err := strconv.ParseUint(r.URL.Query().Get("epoch"), 10, 64); err == nil && ev != 0 {
+		if sv, err := strconv.ParseUint(r.URL.Query().Get("seq"), 10, 64); err == nil {
+			resumeEpoch, resumeSeq, hasResume = ev, sv, true
 		}
 	}
+
+	go s.guestWriter(g)
 	if err := s.room.addGuest(g, serverNS(), resumeEpoch, resumeSeq, hasResume); err != nil {
-		_ = c.WriteMessage(websocket.TextMessage, protocolError("GUEST_REJECTED", err.Error(), true))
-		writeClose(c, 1013, "guest rejected")
+		_ = c.WriteMessage(websocket.TextMessage, protocolError("guest_join_failed", err.Error(), true))
+		writeClose(c, 1013, "guest join failed")
 		return
 	}
 
-	writerDone := make(chan struct{})
-	go s.guestWriter(g, writerDone)
+	log.Printf("guest connected id=%d ip=%s resume=%t", g.id, ip, hasResume)
 
 	for {
 		mt, data, err := c.ReadMessage()
+		t1 := serverNS()
 		if err != nil {
 			return
 		}
@@ -189,50 +230,44 @@ func (s *Server) handleGuestWS(token string, w http.ResponseWriter, r *http.Requ
 			s.metrics.malformedMessages.Add(1)
 			continue
 		}
-		var ctl GuestControl
-		if json.Unmarshal(data, &ctl) != nil || ctl.V != protocolVersion {
-			// Legacy page ping omits v; accept only its narrow ping shape.
-			var legacy map[string]any
-			if json.Unmarshal(data, &legacy) == nil && legacy["type"] == "ping" {
-				enqueue(g, outbound{kind: outboundText, data: encodeJSON(map[string]any{"type": "pong", "id": legacy["id"], "serverNs": serverNS()})})
-				continue
-			}
+		var m GuestControl
+		if err := json.Unmarshal(data, &m); err != nil || m.V != protocolVersion {
 			s.metrics.malformedMessages.Add(1)
 			continue
 		}
-		switch ctl.Type {
+		switch m.Type {
 		case "clock_req":
-			t1 := serverNS()
 			s.metrics.clockRequests.Add(1)
-			if !enqueue(g, outbound{kind: outboundClock, clockID: ctl.ID, t0GuestNS: ctl.T0GuestNS, t1ServerNS: t1}) {
+			if !enqueue(g, outbound{
+				kind:       outboundClock,
+				clockID:    m.ID,
+				t0GuestNS:  m.T0GuestNS,
+				t1ServerNS: t1,
+			}) {
 				return
 			}
+		case "listener_stats":
+			// Metrics reported by a guest are advisory and never alter the room timeline.
 		case "resume":
-			// A reconnect should normally put resume_epoch/last_sequence in its first control message.
-			// We send a fresh state immediately; audio already queued remains bounded and epoch-validated.
-			s.room.mu.Lock()
-			state, _ := s.room.stateLocked(serverNS(), ctl.Epoch, ctl.LastSequence, true)
-			s.room.mu.Unlock()
-			enqueue(g, outbound{kind: outboundText, data: encodeJSON(state)})
-		case "stats":
-			// Telemetry is intentionally accepted but not persisted in v1.
-		case "ping":
-			enqueue(g, outbound{kind: outboundText, data: encodeJSON(map[string]any{"type": "pong", "v": protocolVersion, "id": ctl.ID, "server_ns": serverNS()})})
+			// Reconnect resume is negotiated in the URL before state/ring replay.
+			// A mid-connection resume would risk replaying behind already queued audio, so reject it.
+			_ = enqueue(g, outbound{kind: outboundText, data: protocolError("reconnect_required", "resume requires a fresh WebSocket", true)})
+		default:
+			s.metrics.malformedMessages.Add(1)
 		}
 	}
 }
 
-func (s *Server) guestWriter(g *guestConn, done chan struct{}) {
-	defer close(done)
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
+func (s *Server) guestWriter(g *guestConn) {
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
 	for {
 		select {
 		case o := <-g.send:
 			if g.closed.Load() {
 				return
 			}
-			_ = g.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			_ = g.conn.SetWriteDeadline(time.Now().Add(4 * time.Second))
 			var err error
 			switch o.kind {
 			case outboundText:
@@ -240,22 +275,30 @@ func (s *Server) guestWriter(g *guestConn, done chan struct{}) {
 			case outboundBinary:
 				err = g.conn.WriteMessage(websocket.BinaryMessage, o.data)
 			case outboundClock:
+				// T2 is stamped as late as practical: immediately before the socket write.
 				t2 := serverNS()
-				err = g.conn.WriteJSON(map[string]any{
-					"type": "clock_resp", "v": protocolVersion, "id": o.clockID,
-					"t0_guest_ns": o.t0GuestNS, "t1_server_ns": o.t1ServerNS, "t2_server_ns": t2,
-				})
+				err = g.conn.WriteMessage(websocket.TextMessage, encodeJSON(map[string]any{
+					"type":         "clock_resp",
+					"v":            protocolVersion,
+					"id":           o.clockID,
+					"t0_guest_ns":  o.t0GuestNS,
+					"t1_server_ns": o.t1ServerNS,
+					"t2_server_ns": t2,
+				}))
+			default:
+				err = errors.New("unknown outbound type")
 			}
 			if err != nil {
 				g.closed.Store(true)
 				_ = g.conn.Close()
 				return
 			}
-		case <-ticker.C:
+		case <-ping.C:
 			if g.closed.Load() {
 				return
 			}
-			if err := g.conn.WriteControl(websocket.PingMessage, []byte("jls"), time.Now().Add(2*time.Second)); err != nil {
+			_ = g.conn.SetWriteDeadline(time.Now().Add(4 * time.Second))
+			if err := g.conn.WriteControl(websocket.PingMessage, []byte("jls"), time.Now().Add(4*time.Second)); err != nil {
 				g.closed.Store(true)
 				_ = g.conn.Close()
 				return
@@ -267,5 +310,3 @@ func (s *Server) guestWriter(g *guestConn, done chan struct{}) {
 func writeClose(c *websocket.Conn, code int, reason string) {
 	_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(500*time.Millisecond))
 }
-
-var _ = errors.New
