@@ -12,11 +12,12 @@ const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
+let audioEngineRebuilds=0,audioEngineRebuilding=false;
 let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -87,7 +88,15 @@ function wsURL(){
 function startDecoder(){
   if(decoder)return;
   decoder=new Worker('/decoder-worker.js');
-  decoder.onmessage=e=>onDecoded(e.data||{});
+  decoder.onmessage=e=>{
+    try{onDecoded(e.data||{})}
+    catch(err){
+      metrics.schedulerErrors++;metrics.lastSchedulerError=String(err?.stack||err?.message||err);
+      metrics.playoutGate='scheduler exception';
+      note('SCHEDULER_EXCEPTION: '+metrics.lastSchedulerError.slice(0,240));
+      if(metrics.decodedRmsDb>-70)void rebuildAudioEngine('scheduler exception');
+    }
+  };
   decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});
 }
 startDecoder();
@@ -117,8 +126,13 @@ async function ensureAudio(){
   try{if(navigator.audioSession&&'type' in navigator.audioSession)navigator.audioSession.type='playback'}catch{}
   try{audio=new AC({sampleRate:48000,latencyHint:'interactive'})}catch{audio=new AC({latencyHint:'interactive'})}
   await audio.audioWorklet.addModule('/worklet.js');
-  node=new AudioWorkletNode(audio,'jawahar-sync-processor',{numberOfOutputs:1,outputChannelCount:[2]});
+  node=new AudioWorkletNode(audio,'jawahar-sync-processor',{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[2],channelCount:2,channelCountMode:'explicit',channelInterpretation:'speakers'});
   node.connect(audio.destination);node.port.onmessage=e=>onWorklet(e.data||{});
+  node.addEventListener('processorerror',()=>{
+    metrics.workletProcessorErrors++;metrics.playoutGate='AudioWorklet processor error';
+    note('WORKLET_PROCESSOR_ERROR: rebuilding browser audio engine automatically.');
+    void rebuildAudioEngine('worklet processor error');
+  });
   node.port.postMessage({type:'config',sourceRate:sampleRate,hardResyncMs:100,maxPpm:300,deadbandMs:1});
   if(self.crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'){try{sabWriter=new SabWriter(node)}catch{sabWriter=null}}
   metrics.audioState=audio.state;sampleOutputClock();
@@ -127,6 +141,27 @@ async function ensureAudio(){
     if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Playback interrupted','bad')}
     else if(audio.state==='running'&&joined&&hostOnline)setState('Listening','ok');
   });
+}
+
+async function rebuildAudioEngine(reason){
+  if(audioEngineRebuilding)return;
+  audioEngineRebuilding=true;
+  try{
+    try{node?.disconnect()}catch{}
+    try{await audio?.close?.()}catch{}
+    node=null;audio=null;sabWriter=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;
+    await ensureAudio();
+    await audio.resume();
+    if(audio.state!=='running')throw new Error('AudioContext '+audio.state);
+    joined=true;audioEngineRebuilds++;metrics.audioEngineRebuilds=audioEngineRebuilds;metrics.selfHeals++;
+    ui.join.disabled=true;ui.join.textContent='LISTENING';
+    metrics.playoutGate='audio engine rebuilt: '+reason;
+    note('Browser audio engine rebuilt automatically. Live playback is resuming.');
+  }catch(err){
+    metrics.schedulerErrors++;metrics.lastSchedulerError='rebuild: '+String(err?.message||err);
+    ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';
+    setState('Tap to recover audio','warn');
+  }finally{audioEngineRebuilding=false}
 }
 
 function resetPlayout(reason){
@@ -263,16 +298,28 @@ function maybeRecoverPrecisionFromSafeLocal(m,now=performance.now()){
 function scheduleSafeLocal(m,reason='watchdog'){
   if(!joined||!node||!audio||audio.state!=='running')return false;
   enterSafeLocal(reason);
-  const leadFrames=Math.round(audio.sampleRate*.20);
+  const leadFrames=Math.round(audio.sampleRate*.10);
   const nowFrame=Math.round(audio.currentTime*audio.sampleRate);
-  if(!Number.isFinite(fallbackNextTargetFrame)||fallbackNextTargetFrame<nowFrame+Math.round(audio.sampleRate*.04)){
+  if(!Number.isFinite(fallbackNextTargetFrame)||fallbackNextTargetFrame<nowFrame+Math.round(audio.sampleRate*.03)){
     fallbackNextTargetFrame=nowFrame+leadFrames;
   }
   const sourceRate=Number(m.sampleRate)||sampleRate||48000;
   const startSample=Number.isFinite(m.samplePosition)?m.samplePosition:0;
   const meta={targetFrame:fallbackNextTargetFrame,startSample,frames:m.frames};
   fallbackNextTargetFrame+=Math.round(m.frames*audio.sampleRate/sourceRate);
-  node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
+  try{
+    if(sabWriter){
+      if(!sabWriter.write(m.pcm,meta)){sabWriter.reset();node.port.postMessage({type:'reset'});if(!sabWriter.write(m.pcm,meta))throw new Error('SAB safe-local queue full')}
+    }else{
+      node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
+    }
+  }catch(err){
+    metrics.schedulerErrors++;metrics.lastSchedulerError='safe-local: '+String(err?.message||err);
+    metrics.playoutGate='safe-local handoff failed';
+    note('SAFE_LOCAL_HANDOFF_ERROR: '+metrics.lastSchedulerError.slice(0,240));
+    void rebuildAudioEngine('safe-local handoff failed');
+    return false;
+  }
   metrics.scheduledFrames++;
   metrics.playoutGate='SAFE LOCAL playing';
   lastEpoch=String(m.epoch);lastSeq=String(m.seq);
@@ -315,11 +362,10 @@ function onDecoded(m){
   repairJoinState();
   const gateNow=performance.now();
 
-  // Continuity-first bootstrap: if clearly audible decoded PCM has existed for
-  // 350 ms but the precision scheduler has not accepted a single frame, route
-  // the current live PCM directly through the AudioWorklet. This prevents the
-  // decoded-but-silent SCHEDULER_BLOCKED deadlock seen on real Chrome devices.
-  if(metrics.scheduledFrames===0 && decodedAudibleSince!=null && gateNow-decodedAudibleSince>=350){
+  // Continuity-first bootstrap: the first clearly audible decoded frame must
+  // always reach an output scheduler immediately. Precision sync can take over
+  // after the clock/timeline is ready; audible continuity is never gated by it.
+  if(metrics.scheduledFrames===0 && decodedAudibleSince!=null){
     if(scheduleSafeLocal(m,'startup scheduler bootstrap')){
       metrics.selfHeals++;
       return;
@@ -402,6 +448,7 @@ function onWorklet(m){
   if(m.type==='metrics'){
     metrics.bufferMs=m.bufferMs;metrics.resamplerPpm=m.ppm;metrics.underruns=m.underruns;metrics.lateFrames=Math.max(metrics.lateFrames,m.lateFrames);metrics.hardResyncs=Math.max(metrics.hardResyncs,m.hardResyncs);metrics.overruns=Math.max(metrics.overruns,m.overruns);
     metrics.outputRmsDb=Number.isFinite(m.outputRmsDb)?m.outputRmsDb:-120;metrics.outputPeakDb=Number.isFinite(m.outputPeakDb)?m.outputPeakDb:-120;metrics.workletActive=!!m.active;
+    metrics.workletAlive=true;metrics.workletQuanta=Number(m.processQuanta)||metrics.workletQuanta;
   }
   else if(m.type==='underrun'){metrics.underruns=m.count;suggestedD.markLate(performance.now(),30);setState('Buffering…','warn')}
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
@@ -463,7 +510,9 @@ function render(){
     'Decoder: '+metrics.decoder+' · '+fmt(metrics.decoderMs)+' ms',
     'Decoded level: '+fmt(metrics.decodedRmsDb)+' dBFS · peak '+fmt(metrics.decodedPeakDb)+' dBFS',
     'Output level: '+fmt(metrics.outputRmsDb)+' dBFS · peak '+fmt(metrics.outputPeakDb)+' dBFS · active '+(metrics.workletActive?'yes':'no'),
-    'Scheduled: '+metrics.scheduledFrames+' · fallback: '+(metrics.fallbackPlayback?'SAFE LOCAL':'precision'),
+    'Worklet: '+(metrics.workletAlive?'alive':'NO HEARTBEAT')+' · quanta '+metrics.workletQuanta+' · processor errors '+metrics.workletProcessorErrors,
+    'Scheduler: '+metrics.scheduledFrames+' frames · errors '+metrics.schedulerErrors+(metrics.lastSchedulerError?' · '+metrics.lastSchedulerError.slice(0,120):''),
+    'Fallback: '+(metrics.fallbackPlayback?'SAFE LOCAL':'precision')+' · engine rebuilds '+metrics.audioEngineRebuilds,
     'Playout gate: '+metrics.playoutGate,
     'Late: '+metrics.lateFrames+' · underruns: '+metrics.underruns,
     'Resampler: '+fmt(metrics.resamplerPpm)+' ppm',
