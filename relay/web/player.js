@@ -6,8 +6,8 @@ const room=location.pathname.startsWith('/r/')?decodeURIComponent(location.pathn
 ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'private room'):'invalid link';
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
-const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
-const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
+const suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000});
+const roomD=new SlewValue({initial:850,floor:400,ceiling:1000,upPerSec:.25,downPerSec:.15});
 const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map();
@@ -18,8 +18,9 @@ let directGain=null,directNextTime=null,directSources=new Set();
 let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
+let underrunWindowStart=0,underrunBurstCount=0,forceContinuityOnNextPcm=false,lastUnderrunAt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:850,recommendedDelayMs:850,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,underrunBursts:0,continuityRecoveries:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -50,6 +51,8 @@ function diagnosePipeline(){
 
   if(!room){
     code='INVALID_LINK';message='Guest room token is missing.';action='Open a fresh guest link from the host.';
+  }else if(!wsOpen&&outputAudible){
+    code='RELAY_RECOVERING';message='Relay transport is reconnecting while buffered audio continues.';action='Keep listening; live-edge recovery is automatic.';
   }else if(!wsOpen){
     code='RELAY_DISCONNECTED';message='Browser is not connected to the relay.';action='Check network access and wait for reconnect.';
   }else if(!hostOnline){
@@ -211,13 +214,15 @@ function connect(force=false){
     clearInterval(clockTimer);clockTimer=null;stopTransportWatchdog();
     // Continuity-first reconnect: do NOT flush the AudioWorklet/direct queue.
     // Keep lastEpoch/lastSeq so the relay recovery ring can replay only the gap.
-    setState(navigator.onLine===false?'Network offline':'Reconnecting…',navigator.onLine===false?'bad':'warn');
+    const carryingAudio=joined&&audio?.state==='running'&&(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>80);
+    if(navigator.onLine===false)setState(carryingAudio?'Listening · network recovery':'Network offline',carryingAudio?'ok':'bad');
+    else setState(carryingAudio?'Listening · reconnecting':'Reconnecting…',carryingAudio?'ok':'warn');
     note('Connection interrupted; buffered audio is preserved while reconnecting automatically.');
     scheduleReconnect();
   };
   ws.onerror=()=>{};
 }
-function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(2000,Math.max(100,Math.round(backoff*1.55)));reconnectTimer=setTimeout(()=>connect(),d)}
+function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(800,Math.max(80,Math.round(backoff*1.45)));reconnectTimer=setTimeout(()=>connect(),d)}
 function stopTransportWatchdog(){clearInterval(transportWatchdogTimer);transportWatchdogTimer=null}
 function startTransportWatchdog(){
   stopTransportWatchdog();
@@ -445,6 +450,17 @@ function onDecoded(m){
   repairJoinState();
   const gateNow=performance.now();
 
+  if(lastUnderrunAt&&gateNow-lastUnderrunAt>3000){
+    underrunWindowStart=0;underrunBurstCount=0;lastUnderrunAt=0;
+  }
+  if(forceContinuityOnNextPcm&&decodedAudibleSince!=null){
+    forceContinuityOnNextPcm=false;
+    if(scheduleSafeLocal(m,'underrun burst continuity')){
+      metrics.continuityRecoveries++;
+      return;
+    }
+  }
+
   // Continuity-first bootstrap: the first clearly audible decoded frame must
   // always reach an output scheduler immediately. Precision sync can take over
   // after the clock/timeline is ready; audible continuity is never gated by it.
@@ -534,11 +550,24 @@ function onWorklet(m){
     metrics.workletAlive=true;metrics.workletQuanta=Number(m.processQuanta)||metrics.workletQuanta;
   }
   else if(m.type==='underrun'){
+    const now=performance.now();
     metrics.underruns=m.count;
-    suggestedD.markLate(performance.now(),80);
-    metrics.playoutGate='underrun recovery';
-    if(metrics.directPlayback||metrics.bufferMs>0)setState('Listening · recovering','ok');
-    else setState('Recovering audio…','warn');
+    lastUnderrunAt=now;
+    if(!underrunWindowStart||now-underrunWindowStart>2500){underrunWindowStart=now;underrunBurstCount=0}
+    underrunBurstCount++;
+    suggestedD.markLate(now,Math.min(250,60+underrunBurstCount*30));
+    metrics.playoutGate='underrun continuity recovery';
+    // One isolated underrun is not a user-visible buffering event. Repeated
+    // underruns trigger the independent direct-output continuity path on the
+    // next decoded PCM frame while precision sync repairs in parallel.
+    if(underrunBurstCount>=3){
+      forceContinuityOnNextPcm=true;
+      metrics.underrunBursts++;
+      metrics.selfHeals++;
+      setState('Listening · continuity recovery','ok');
+    }else if(hostOnline&&joined){
+      setState('Listening','ok');
+    }
   }
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
   else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;note('Large timing error corrected with a short crossfade.')}
