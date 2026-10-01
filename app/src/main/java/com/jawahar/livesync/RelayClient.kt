@@ -29,6 +29,10 @@ data class RelayMetrics(
     val relayRttMs: Long? = null,
     val reconnects: Int = 0,
     val sendBufferDepth: Int = 0,
+    val webSocketQueueBytes: Long = 0,
+    val lastSendAgeMs: Long? = null,
+    val lastRelayControlAgeMs: Long? = null,
+    val resumeAfterSequence: Long = 0,
     val droppedFrames: Long = 0
 )
 
@@ -67,7 +71,11 @@ class RelayClient(
     private val droppedFrames = AtomicLong(0)
     private val lastSentSequence = AtomicLong(0)
     private val lastRttMs = AtomicLong(-1)
-    private val queue = ArrayBlockingQueue<QueuedFrame>(90)
+    private val lastSendProgressNs = AtomicLong(0)
+    private val lastRelayControlNs = AtomicLong(0)
+    private val lastResumeAfterSequence = AtomicLong(0)
+    private val relayDiscontinuity = AtomicBoolean(false)
+    private val queue = ArrayBlockingQueue<QueuedFrame>(UPLINK_QUEUE_CAPACITY)
     private val pingSentNs = ConcurrentHashMap<String, Long>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "JlsRelayScheduler").apply { isDaemon = true }
@@ -78,29 +86,53 @@ class RelayClient(
     @Volatile
     private var socket: WebSocket? = null
 
+    @Volatile
+    private var currentNetwork: Network? = null
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(5, TimeUnit.SECONDS)
-        .pingInterval(5, TimeUnit.SECONDS)
+        .pingInterval(3, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            val previous = currentNetwork
+            currentNetwork = network
             if (!running.get() || authBlocked.get()) return
-            if (!connected.get() && !connecting.get()) scheduleConnect(0)
+            if (previous != null && previous != network && (connected.get() || connecting.get())) {
+                forceReconnect("Default network route changed; reconnecting immediately on the new route.")
+            } else if (!connected.get() && !connecting.get()) {
+                scheduleConnect(0)
+            }
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            currentNetwork = network
+            if (!running.get() || authBlocked.get()) return
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                !connected.get() &&
+                !connecting.get()
+            ) {
+                scheduleConnect(0)
+            }
         }
 
         override fun onLost(network: Network) {
+            if (currentNetwork == network) currentNetwork = connectivity.activeNetwork
             if (!running.get()) return
             if (!hasUsableNetwork()) {
                 connected.set(false)
                 connecting.set(false)
                 socket?.cancel()
                 socket = null
-                listener.onRelayState(RelayState.NETWORK_INTERRUPTED, "No usable network is available.")
+                listener.onRelayState(RelayState.NETWORK_INTERRUPTED, "No validated network is available.")
                 emitMetrics()
+            } else if (connected.get() || connecting.get()) {
+                forceReconnect("Active network changed after route loss; reconnecting immediately.")
             }
         }
     }
@@ -120,6 +152,7 @@ class RelayClient(
         }
         if (!running.compareAndSet(false, true)) return
 
+        currentNetwork = connectivity.activeNetwork
         try {
             connectivity.registerDefaultNetworkCallback(networkCallback)
         } catch (_: Throwable) {
@@ -143,6 +176,7 @@ class RelayClient(
         }
         socket?.close(1000, "host-stop")
         socket = null
+        currentNetwork = null
         connected.set(false)
         connecting.set(false)
         queue.clear()
@@ -159,10 +193,10 @@ class RelayClient(
         if (!running.get()) return
         val item = QueuedFrame(packet, captureMonoNs, sequence)
         if (!queue.offer(item)) {
-            queue.poll()
-            droppedFrames.incrementAndGet()
-            if (!queue.offer(item)) droppedFrames.incrementAndGet()
+            queue.poll()?.let { markDroppedFrame() }
+            if (!queue.offer(item)) markDroppedFrame()
         }
+        trimToLiveEdge()
         emitMetrics()
     }
 
@@ -234,6 +268,7 @@ class RelayClient(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            lastRelayControlNs.set(SystemClock.elapsedRealtimeNanos())
             try {
                 val obj = JSONObject(text)
                 when (obj.optString("type")) {
@@ -248,13 +283,13 @@ class RelayClient(
                         val wasReconnect = everAuthenticated.getAndSet(true)
                         if (wasReconnect) reconnectCount.incrementAndGet()
                         val resumeAfter = obj.optLong("resume_after_sequence", 0L)
+                        lastResumeAfterSequence.set(resumeAfter)
                         while (true) {
                             val head = queue.peek() ?: break
                             if (head.sequence > resumeAfter) break
                             queue.poll()
-                            droppedFrames.incrementAndGet()
                         }
-                        discardStale(RECONNECT_STALE_FRAME_NS)
+                        trimToLiveEdge()
                         listener.onRelayState(
                             RelayState.CONNECTED,
                             if (wasReconnect) {
@@ -295,8 +330,11 @@ class RelayClient(
                                 listener.onRelayState(RelayState.ERROR, message)
                                 webSocket.close(1002, "bad-hello")
                             }
-                            retryable -> listener.onRelayState(RelayState.RECONNECTING, message)
-                            else -> listener.onRelayState(RelayState.ERROR, "$code: $message")
+                            retryable -> forceReconnect("Relay requested reconnect: " + message)
+                            else -> {
+                                listener.onRelayState(RelayState.ERROR, code + ": " + message)
+                                webSocket.close(1011, "relay-error")
+                            }
                         }
                     }
                 }
@@ -350,6 +388,7 @@ class RelayClient(
             return
         }
 
+        trimToLiveEdge()
         val attempt = reconnectAttempts.incrementAndGet()
         val base = RetryPolicy.baseDelayMs(attempt - 1)
         val jitter = if (base >= 10) Random.nextLong(-(base / 10), base / 10 + 1) else 0
@@ -377,30 +416,46 @@ class RelayClient(
 
                 val ws = socket
                 if (ws == null || !connected.get()) {
-                    if (!queue.offer(item)) droppedFrames.incrementAndGet()
-                    continue
-                }
-
-                if (ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) {
-                    droppedFrames.incrementAndGet()
+                    markDroppedFrame()
                     emitMetrics()
                     continue
                 }
 
-                val ok = ws.send(item.packet.toByteString())
+                if (ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) {
+                    markDroppedFrame()
+                    emitMetrics()
+                    forceReconnect(
+                        "WebSocket backpressure exceeded " + MAX_SOCKET_QUEUE_BYTES +
+                            " bytes; flushing stale socket state and returning to live edge."
+                    )
+                    continue
+                }
+
+                val outbound = if (relayDiscontinuity.getAndSet(false)) {
+                    item.packet.copyOf().also { packet ->
+                        if (packet.size > 6) {
+                            packet[6] = (packet[6].toInt() or JlsProtocol.FLAG_DISCONTINUITY).toByte()
+                        }
+                    }
+                } else {
+                    item.packet
+                }
+
+                val ok = ws.send(outbound.toByteString())
                 if (ok) {
-                    bytesUploaded.addAndGet(item.packet.size.toLong())
+                    bytesUploaded.addAndGet(outbound.size.toLong())
                     packetsUploaded.incrementAndGet()
                     lastSentSequence.set(item.sequence)
+                    lastSendProgressNs.set(SystemClock.elapsedRealtimeNanos())
                 } else {
-                    droppedFrames.incrementAndGet()
-                    ws.cancel()
+                    markDroppedFrame()
+                    forceReconnect("WebSocket send queue rejected an audio frame; reconnecting at live edge.")
                 }
                 emitMetrics()
             } catch (_: InterruptedException) {
                 return
             } catch (_: Throwable) {
-                droppedFrames.incrementAndGet()
+                markDroppedFrame()
                 emitMetrics()
             }
         }
@@ -412,16 +467,55 @@ class RelayClient(
             val head = queue.peek() ?: break
             if (now - head.captureMonoNs <= maxAgeNs) break
             queue.poll()
-            droppedFrames.incrementAndGet()
+            markDroppedFrame()
         }
+    }
+
+    private fun trimToLiveEdge() {
+        discardStale(RECONNECT_LIVE_EDGE_NS)
+        val maxFrames = (250 / frameMs).coerceAtLeast(1)
+        while (queue.size > maxFrames) {
+            queue.poll() ?: break
+            markDroppedFrame()
+        }
+    }
+
+    private fun markDroppedFrame() {
+        droppedFrames.incrementAndGet()
+        relayDiscontinuity.set(true)
+    }
+
+    private fun forceReconnect(detail: String) {
+        if (!running.get() || authBlocked.get()) return
+        val old = socket
+        socket = null
+        connected.set(false)
+        connecting.set(false)
+        old?.cancel()
+        trimToLiveEdge()
+        listener.onRelayState(RelayState.RECONNECTING, detail)
+        emitMetrics()
+        scheduleConnect(0)
     }
 
     private fun pingTick() {
         if (!running.get() || !connected.get()) return
         val ws = socket ?: return
-        if (ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) return
 
         val now = SystemClock.elapsedRealtimeNanos()
+        val oldestOutstanding = pingSentNs.values.minOrNull()
+        if (oldestOutstanding != null && now - oldestOutstanding > CONTROL_STALL_NS) {
+            forceReconnect(
+                "RELAY_ACK/STATE stalled: no clock response within " +
+                    (CONTROL_STALL_NS / 1_000_000L) + " ms."
+            )
+            return
+        }
+        if (ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) {
+            forceReconnect("WebSocket control path is backpressured; reconnecting at live edge.")
+            return
+        }
+
         val id = now.toString()
         pingSentNs[id] = now
         val msg = JSONObject()
@@ -429,7 +523,11 @@ class RelayClient(
             .put("v", JlsProtocol.VERSION)
             .put("id", id)
             .put("t0_ns", now)
-        if (!ws.send(msg.toString())) pingSentNs.remove(id)
+        if (!ws.send(msg.toString())) {
+            pingSentNs.remove(id)
+            forceReconnect("WebSocket liveness probe could not be queued; reconnecting immediately.")
+            return
+        }
 
         val cutoff = now - 30_000_000_000L
         pingSentNs.entries.removeIf { it.value < cutoff }
@@ -443,6 +541,9 @@ class RelayClient(
     }
 
     private fun emitMetrics() {
+        val now = SystemClock.elapsedRealtimeNanos()
+        val sendNs = lastSendProgressNs.get()
+        val controlNs = lastRelayControlNs.get()
         listener.onRelayMetrics(
             RelayMetrics(
                 bytesUploaded = bytesUploaded.get(),
@@ -450,15 +551,20 @@ class RelayClient(
                 relayRttMs = lastRttMs.get().takeIf { it >= 0 },
                 reconnects = reconnectCount.get(),
                 sendBufferDepth = queue.size,
+                webSocketQueueBytes = socket?.queueSize() ?: 0L,
+                lastSendAgeMs = sendNs.takeIf { it > 0 }?.let { max(0L, (now - it) / 1_000_000L) },
+                lastRelayControlAgeMs = controlNs.takeIf { it > 0 }?.let { max(0L, (now - it) / 1_000_000L) },
+                resumeAfterSequence = lastResumeAfterSequence.get(),
                 droppedFrames = droppedFrames.get()
             )
         )
     }
 
     companion object {
-        private const val MAX_SOCKET_QUEUE_BYTES = 512L * 1024L
-        private const val STALE_FRAME_NS = 1_500_000_000L
-        private const val RECONNECT_LIVE_EDGE_NS = 1_000_000_000L
-        private const val RECONNECT_STALE_FRAME_NS = 1_500_000_000L
+        private const val UPLINK_QUEUE_CAPACITY = 24
+        private const val MAX_SOCKET_QUEUE_BYTES = 12L * 1024L
+        private const val STALE_FRAME_NS = 400_000_000L
+        private const val RECONNECT_LIVE_EDGE_NS = 250_000_000L
+        private const val CONTROL_STALL_NS = 12_000_000_000L
     }
 }
