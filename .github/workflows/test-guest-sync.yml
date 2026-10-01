@@ -5,6 +5,7 @@ on:
     branches: [youtube-live-sync]
     paths:
       - 'relay/**'
+      - 'web/**'
       - '.github/workflows/test-guest-sync.yml'
   workflow_dispatch:
 
@@ -25,10 +26,16 @@ jobs:
           node --check relay/web/decoder-worker.js
           node --check relay/web/worklet.js
           node --check relay/web/sync-core.mjs
-      - name: Deterministic guest synchronization tests
+          node --check relay/web/vendor/libopus-wasm/index.js
+          node --check relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+      - name: Deterministic guest synchronization and vendor tests
         run: |
           node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/protocol-vector.test.mjs
           node relay/web/tests/assets.test.mjs
+          node relay/web/tests/vendor-opus.test.mjs
+      - name: Verify root web mirror
+        run: diff -qr relay/web web
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
