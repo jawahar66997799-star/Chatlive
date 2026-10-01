@@ -193,21 +193,6 @@ function observeServerInstance(id){
   return true;
 }
 
-function stopTransportWatch(){clearInterval(transportWatchTimer);transportWatchTimer=null}
-function startTransportWatch(){
-  stopTransportWatch();
-  transportWatchTimer=setInterval(()=>{
-    if(!ws||ws.readyState!==WebSocket.OPEN)return;
-    const age=performance.now()-lastWsRxAt;metrics.lastRxAgeMs=age;
-    if(lastWsRxAt>0&&age>TRANSPORT_STALL_MS){
-      metrics.transportGap=true;
-      setState('Reconnecting…','warn');
-      note('Transport stalled; reconnecting automatically while buffered audio continues.');
-      try{ws.close(4002,'transport watchdog')}catch{}
-    }
-  },1000);
-}
-
 function connect(force=false){
   clearTimeout(reconnectTimer);
   if(!room){setState('Invalid guest link','bad');note('Ask the host for a fresh Jawahar Live Sync link.');ui.join.disabled=true;return;}
@@ -216,13 +201,20 @@ function connect(force=false){
   generation++;const gen=generation;
   clock.reset();pings.clear();
   metrics.rttMs=null;metrics.clockOffsetMs=null;metrics.clockDriftPpm=null;metrics.clockConfidenceMs=null;
-  metrics.transportGap=true;
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline?'Host online':'Connected','ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1500);startTransportWatchdog()};
+  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline&&joined?'Listening':(hostOnline?'Host online':'Connected'),'ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1500);startTransportWatchdog()};
   ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
-  ws.onclose=()=>{if(gen!==generation)return;clearInterval(clockTimer);clockTimer=null;stopTransportWatchdog();if(joined)resetPlayout('reconnect');setState(navigator.onLine===false?'Network offline':'Reconnecting…','bad');scheduleReconnect()};
+  ws.onclose=()=>{
+    if(gen!==generation)return;
+    clearInterval(clockTimer);clockTimer=null;stopTransportWatchdog();
+    // Continuity-first reconnect: do NOT flush the AudioWorklet/direct queue.
+    // Keep lastEpoch/lastSeq so the relay recovery ring can replay only the gap.
+    setState(navigator.onLine===false?'Network offline':'Reconnecting…',navigator.onLine===false?'bad':'warn');
+    note('Connection interrupted; buffered audio is preserved while reconnecting automatically.');
+    scheduleReconnect();
+  };
   ws.onerror=()=>{};
 }
 function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(2000,Math.max(100,Math.round(backoff*1.55)));reconnectTimer=setTimeout(()=>connect(),d)}
@@ -561,7 +553,7 @@ function resumeVisible(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
-window.addEventListener('online',()=>connect(true));window.addEventListener('offline',()=>{metrics.transportGap=true;setState('Network offline','bad')});
+window.addEventListener('online',()=>connect(true));window.addEventListener('offline',()=>setState('Network offline','bad'));
 try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
 
 function sendStats(){
