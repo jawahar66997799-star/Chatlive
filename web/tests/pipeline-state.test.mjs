@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {deriveGuestPipelineState,GUEST_PIPELINE_STATES as S} from '../sync-core.mjs';
+import {deriveGuestPipelineState,GUEST_PIPELINE_STATES as S,deriveGuestContinuityState,GUEST_CONTINUITY_STATES as C} from '../sync-core.mjs';
 
 const now=10000;
 const healthy={
@@ -49,3 +49,13 @@ assert.equal(code({lastDirectAudibleAt:9500,continuityMode:true}),S.PLAYING);
 assert.equal(code({decodedSignal:false,outputAudible:true}),S.WAITING_FOR_AUDIO);
 
 console.log('JLS guest pipeline-state tests: PASS');
+
+
+const continuity=e=>deriveGuestContinuityState({...healthy,relayStreamState:'AUDIO_FLOWING',...e},now).code;
+assert.equal(continuity({relayOpen:false,everRelayConnected:true}),C.RECONNECTING);
+assert.equal(continuity({relayStreamState:'CONNECTED_NO_HOST',hostOnline:false}),C.CONNECTED_NO_HOST);
+assert.equal(continuity({relayStreamState:'HOST_CONNECTED_NO_AUDIO',hostOnline:true,binaryFrames:0}),C.HOST_CONNECTED_NO_AUDIO);
+assert.equal(continuity({relayStreamState:'HOST_STALLED',hostOnline:true}),C.HOST_STALLED);
+assert.equal(continuity({relayStreamState:'AUDIO_FLOWING',hostOnline:true,outputAudible:false,lastAudibleOutputAt:0,lastDirectAudibleAt:0}),C.AUDIO_FLOWING);
+assert.equal(continuity({relayStreamState:'AUDIO_FLOWING',hostOnline:true,outputAudible:true}),C.LIVE);
+assert.equal(continuity({relayStreamState:'AUDIO_FLOWING',hostOnline:true,guestTooSlowUntil:11000}),C.GUEST_TOO_SLOW);
