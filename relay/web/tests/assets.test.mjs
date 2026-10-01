@@ -72,7 +72,9 @@ assert.match(player,/SAFE LOCAL/);
 
 assert.match(worker,/levelOf\(pcm\)/);
 
-assert.match(worker,/outputPeakDb/);
 
 assert.match(worklet,/outputRmsDb/);
 assert.match(worklet,/outputPeakDb/);
+
+assert.match(worker,/decodedRmsDb/);
+assert.match(worker,/decodedPeakDb/);
