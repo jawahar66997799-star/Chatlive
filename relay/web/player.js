@@ -18,9 +18,9 @@ self.__JLS_METRICS__=metrics;
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
 function note(s){ui.note.textContent=s}
 function wsURL(){
-  const u=new URL((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/listen');
-  u.searchParams.set('room',room);
-  if(lastEpoch!==null&&lastSeq!==null){u.searchParams.set('resume_epoch',lastEpoch);u.searchParams.set('resume_seq',lastSeq)}
+  const base=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;
+  const u=new URL(base+'/v1/ws/guest/'+encodeURIComponent(room));
+  if(lastEpoch!==null&&lastSeq!==null){u.searchParams.set('epoch',lastEpoch);u.searchParams.set('seq',lastSeq)}
   return u.href;
 }
 
@@ -73,8 +73,11 @@ function resetPlayout(reason){
   if(reason==='epoch')note('Host started a fresh stream. Re-aligning…');else note('Re-aligning to the live timeline…');
 }
 
-function connect(){
-  clearTimeout(reconnectTimer);generation++;const gen=generation;setState(ws?'Reconnecting…':'Connecting…','warn');
+function connect(force=false){
+  clearTimeout(reconnectTimer);
+  if(!force&&ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;
+  if(force&&ws){try{ws.close(4001,'refresh transport')}catch{}}
+  generation++;const gen=generation;setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
   ws.onopen=()=>{if(gen!==generation)return;backoff=250;ui.join.disabled=false;setState(hostOnline?'Host online':'Connected','ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,2000)};
@@ -180,14 +183,14 @@ function resumeVisible(){
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeVisible();else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
-document.addEventListener('resume',()=>{connect();resumeVisible()});
-window.addEventListener('online',connect);window.addEventListener('offline',()=>setState('Network offline','bad'));
+document.addEventListener('resume',()=>{connect(true);resumeVisible()});
+window.addEventListener('online',()=>connect());window.addEventListener('offline',()=>setState('Network offline','bad'));
 try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
 
 function sendStats(){
   if(!ws||ws.readyState!==WebSocket.OPEN)return;
   const safe=lastSeq!==null&&BigInt(lastSeq)<=BigInt(Number.MAX_SAFE_INTEGER)?Number(lastSeq):0;
-  try{ws.send(JSON.stringify({type:'stats',v:1,last_sequence:safe,buffer_depth_ms:metrics.bufferMs,underruns:metrics.underruns,late_frames:metrics.lateFrames}))}catch{}
+  try{ws.send(JSON.stringify({type:'listener_stats',v:1,last_sequence:safe,buffer_depth_ms:metrics.bufferMs,underruns:metrics.underruns,late_frames:metrics.lateFrames,recommended_delay_ms:metrics.recommendedDelayMs,resampler_ppm:metrics.resamplerPpm,hard_resyncs:metrics.hardResyncs}))}catch{}
 }
 function fmt(v){return Number.isFinite(v)?v.toFixed(1):'—'}
 function render(){
