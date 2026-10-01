@@ -16,6 +16,7 @@ jobs:
         run: |
           python3 -m py_compile \
             tools/benchmark/jls_network_clock_sim.py \
+            tools/benchmark/jls_buffer_sweep.py \
             tools/benchmark/jls_calibration.py \
             tools/benchmark/jls_calibration_selftest.py \
             tools/benchmark/jls_generate_e2e_signal.py \
@@ -36,20 +37,28 @@ jobs:
             --json-out /tmp/jls-sim-failures.json --md-out /tmp/jls-sim-failures.md
           cat /tmp/jls-sim-failures.md
 
+      - name: Adaptive 150-1000ms common-delay sweep
+        run: |
+          python3 tools/benchmark/jls_buffer_sweep.py \
+            --listeners 20 --duration-s 120 --outages off \
+            --json-out /tmp/jls-buffer-sweep.json | tee /tmp/jls-buffer-sweep.md
+
       - name: Acoustic calibration synthetic self-test
         run: python3 tools/benchmark/jls_calibration_selftest.py
 
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
 
       - name: Generate E2E reference assets
         run: |
           python3 tools/benchmark/jls_generate_e2e_signal.py \
             --duration-s 12 --out /tmp/jls-e2e.wav --manifest /tmp/jls-e2e.json
-          DURATION=12 bash tools/benchmark/jls_make_e2e_video.sh /tmp/jls-e2e.wav /tmp/jls-e2e.mp4
+          DURATION=12 bash tools/benchmark/jls_make_e2e_video.sh /tmp/jls-e2e.wav /tmp/jls-e2e.mov
           test -s /tmp/jls-e2e.wav
           test -s /tmp/jls-e2e.json
-          test -s /tmp/jls-e2e.mp4
+          test -s /tmp/jls-e2e.mov
 
       - name: Shell syntax
         run: |
@@ -64,9 +73,11 @@ jobs:
             /tmp/jls-sim-steady.md
             /tmp/jls-sim-failures.json
             /tmp/jls-sim-failures.md
+            /tmp/jls-buffer-sweep.json
+            /tmp/jls-buffer-sweep.md
             /tmp/jls-e2e.json
             /tmp/jls-e2e.wav
-            /tmp/jls-e2e.mp4
+            /tmp/jls-e2e.mov
 
   integration-contract:
     runs-on: ubuntu-latest
@@ -76,13 +87,22 @@ jobs:
       - name: Android relay guest contract gate
         run: python3 tools/benchmark/jls_protocol_contract_check.py --root . --json-out /tmp/jls-contract.json
 
+      - name: Guest sync unit tests
+        run: node --test relay/web/tests/sync-core.test.mjs
+
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23.x'
+          go-version: '1.27.x'
           cache: false
 
-      - name: Relay compile gate
+      - name: Relay compile and unit gate
         working-directory: relay
         run: |
           go mod tidy
           go test ./...
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jls-integration-contract
+          path: /tmp/jls-contract.json
