@@ -246,11 +246,12 @@ def fixed_baseline(scenario,count=20,duration_s=180,seed=20261001):
 
 def markdown(results):
     lines=['# JLS Final Controller Simulation','', 'All quantitative values are **[SIMULATED]**. Network distributions are model inputs, not field measurements.','',
-           '| Scenario | Relay D final ms | Relay D max | Local D p50 | Guest D spread max | Tracking error p95 | Late % | Hard-resync proxy | Late-join gap max | Resume late proxy max | Fixed-400 late % |',
-           '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+           '| Scenario | Relay D final ms | Relay D max | Last60 D range | Direction changes | D total variation | Local D p50 | Guest D spread max | Tracking error p95 | Late % | Hard-resync proxy | Late-join gap max | Resume late proxy max | Recovery <=10 ms s | Fixed-400 late % |',
+           '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     for r in results:
         a=r['adaptive']; f=r['fixed']
-        lines.append(f"| {r['scenario']} | {a['relay_D_final_ms']:.1f} | {a['relay_D_ms']['max']:.1f} | {a['guest_local_D_ms']['p50']:.1f} | {a['guest_local_D_spread_ms']['max']:.1f} | {a['guest_tracking_error_abs_ms']['p95']:.1f} | {a['late_frame_pct']:.3f} | {a['hard_resync_proxy_events']} | {a['late_join_vs_existing_D_gap_ms']['max']:.1f} | {a['resume_first_frame_lateness_proxy_ms']['max']:.1f} | {f['late_frame_pct']:.3f} |")
+        recovery='—' if a['recovery_to_within_10ms_of_relay_s'] is None else f"{a['recovery_to_within_10ms_of_relay_s']:.1f}"
+        lines.append(f"| {r['scenario']} | {a['relay_D_final_ms']:.1f} | {a['relay_D_ms']['max']:.1f} | {a['relay_D_last60_range_ms']:.2f} | {a['relay_direction_changes']} | {a['relay_D_total_variation_ms']:.1f} | {a['guest_local_D_ms']['p50']:.1f} | {a['guest_local_D_spread_ms']['max']:.1f} | {a['guest_tracking_error_abs_ms']['p95']:.1f} | {a['late_frame_pct']:.3f} | {a['hard_resync_proxy_events']} | {a['late_join_vs_existing_D_gap_ms']['max']:.1f} | {a['resume_first_frame_lateness_proxy_ms']['max']:.1f} | {recovery} | {f['late_frame_pct']:.3f} |")
     return '\n'.join(lines)+'\n'
 
 def main():
