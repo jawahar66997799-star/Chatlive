@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
+          cache: false
+      - name: Prepare relay dependencies
+        working-directory: relay
+        run: go mod tidy
       - name: Relay integration tests
         working-directory: relay
         run: go test ./...
