@@ -14,6 +14,7 @@ let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
 let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
+let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
 const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
@@ -129,7 +130,9 @@ async function ensureAudio(){
 }
 
 function resetPlayout(reason){
-  timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;sabWriter?.reset();node?.port.postMessage({type:'reset'});
+  timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;
+  fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackEnteredAt=null;precisionRecoveryGraceUntil=0;lastPrecisionRecoveryAttempt=0;
+  sabWriter?.reset();node?.port.postMessage({type:'reset'});
   // Playout resets must never tear down the Opus decoder. In WebCodecs,
   // AudioDecoder.reset() returns the decoder to an unconfigured state; doing
   // that on the user's Listen gesture caused decoded audio to stop before any
@@ -216,9 +219,45 @@ function onControl(text){
 function enterSafeLocal(reason){
   if(fallbackPlayback)return;
   fallbackPlayback=true;metrics.fallbackPlayback=true;fallbackNextTargetFrame=null;
+  fallbackEnteredAt=performance.now();lastPrecisionRecoveryAttempt=0;
   sabWriter?.reset();node?.port.postMessage({type:'reset'});
   metrics.playoutGate='SAFE LOCAL: '+reason;
   note('Precision sync is not producing output; using safe local playback while the clock recovers.');
+}
+
+function exitSafeLocalForPrecision(targetPerf,reason='clock/timeline recovered'){
+  const now=performance.now();
+  fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackNextTargetFrame=null;
+  fallbackEnteredAt=null;lastPrecisionRecoveryAttempt=now;
+  precisionRecoveryGraceUntil=now+Math.max(1200,(Number.isFinite(targetPerf)?Math.max(0,targetPerf-now):0)+700);
+  timeline.reset();sabWriter?.reset();node?.port.postMessage({type:'reset'});
+  metrics.selfHeals++;
+  metrics.playoutGate='precision recovery';
+  setState('Re-aligning…','warn');
+  note('Safe local playback recovered. Rejoining synchronized precision playout.');
+}
+
+function maybeRecoverPrecisionFromSafeLocal(m,now=performance.now()){
+  if(!fallbackPlayback||!joined||!audio||audio.state!=='running'||!clock.ready||!roomTimeline)return false;
+  if(fallbackEnteredAt==null||now-fallbackEnteredAt<1200)return false;
+  if(lastPrecisionRecoveryAttempt&&now-lastPrecisionRecoveryAttempt<750)return false;
+
+  const pos=Number.isFinite(m.samplePosition)?m.samplePosition:null;
+  if(pos==null)return false;
+  const nominal=roomTimeline.originServerMs+(pos-roomTimeline.originSample)*1000/roomTimeline.sampleRate;
+  const d=roomD.tick(now);
+  const targetPerf=clock.localAtServer(targetServerTimeMs(nominal,d));
+  lastPrecisionRecoveryAttempt=now;
+  if(!Number.isFinite(targetPerf))return false;
+
+  // Re-enter precision only when this live frame has a usable future deadline.
+  // Too-far-future means the clock/timeline is still unstable; already-late
+  // means continuity mode should keep carrying audio until the next opportunity.
+  const lead=targetPerf-now;
+  if(lead<40||lead>1500)return false;
+
+  exitSafeLocalForPrecision(targetPerf,'shared timeline recovered');
+  return true;
 }
 
 function scheduleSafeLocal(m,reason='watchdog'){
@@ -243,6 +282,7 @@ function scheduleSafeLocal(m,reason='watchdog'){
 
 function shouldForceSafeLocal(now=performance.now()){
   if(fallbackPlayback)return true;
+  if(now<precisionRecoveryGraceUntil)return false;
   if(decodedAudibleSince==null)return false;
   if(now-decodedAudibleSince<600)return false;
   return metrics.outputRmsDb<=-90 && !metrics.workletActive;
@@ -287,8 +327,10 @@ function onDecoded(m){
   }
 
   if(fallbackPlayback){
-    scheduleSafeLocal(m,'continuity fallback');
-    return;
+    if(!maybeRecoverPrecisionFromSafeLocal(m,gateNow)){
+      scheduleSafeLocal(m,'continuity fallback');
+      return;
+    }
   }
 
   if(!clock.ready){
@@ -330,7 +372,7 @@ function onDecoded(m){
   if(targetPerf<now){metrics.lateFrames++;suggestedD.markLate(now,now-targetPerf)}
 
   const silentOutputForMs=decodedAudibleSince==null?0:now-decodedAudibleSince;
-  if(!fallbackPlayback && silentOutputForMs>600 && metrics.outputRmsDb<=-90 && !metrics.workletActive){
+  if(!fallbackPlayback && now>=precisionRecoveryGraceUntil && silentOutputForMs>600 && metrics.outputRmsDb<=-90 && !metrics.workletActive){
     enterSafeLocal(metrics.scheduledFrames===0?'no precision frames scheduled':'precision output silent');
   }
 
