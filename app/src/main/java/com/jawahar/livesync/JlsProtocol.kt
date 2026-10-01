@@ -9,43 +9,51 @@ data class EncodedAudioFrame(
     val captureMonoNs: Long,
     val samplePosition: Long,
     val sampleCount: Int,
-    val layerId: Int,
     val flags: Int,
     val payload: ByteArray,
-    val encodeTimeUs: Long
+    val layer: Int = JlsProtocol.LAYER_HIGH
 )
 
 object JlsProtocol {
-    const val VERSION = 2
-    const val CODEC_OPUS = 1
+    const val VERSION = 1
+    const val HEADER_BYTES = 64
     const val MESSAGE_AUDIO = 1
-    const val HEADER_BYTES = 52
-    const val FLAG_DISCONTINUITY = 1
-    const val FLAG_RECOVERY = 1 shl 1
+    const val CODEC_OPUS = 1
+    const val LAYER_HIGH = 0
+    const val LAYER_LOW = 1
 
-    private val MAGIC = byteArrayOf(
-        'J'.code.toByte(), 'L'.code.toByte(), 'S'.code.toByte(), '2'.code.toByte()
-    )
+    const val FLAG_DISCONTINUITY = 1 shl 0
+    const val FLAG_KEY_BOUNDARY = 1 shl 1
 
-    fun encodeAudio(frame: EncodedAudioFrame): ByteArray {
-        require(frame.payload.size <= 65_535) { "payload too large" }
-        val out = ByteBuffer
-            .allocate(HEADER_BYTES + frame.payload.size)
-            .order(ByteOrder.BIG_ENDIAN)
+    private const val SAMPLE_RATE = 48_000
+    private val MAGIC = byteArrayOf('J'.code.toByte(), 'L'.code.toByte(), 'S'.code.toByte(), '1'.code.toByte())
 
+    fun packetize(frame: EncodedAudioFrame, channels: Int = 2): ByteArray {
+        require(channels in 1..2)
+        require(frame.epoch > 0)
+        require(frame.sequence >= 0)
+        require(frame.sampleCount in 1..0xFFFF)
+        require(frame.payload.size <= 0xFFFF)
+
+        val out = ByteBuffer.allocate(HEADER_BYTES + frame.payload.size).order(ByteOrder.BIG_ENDIAN)
         out.put(MAGIC)
         out.put(VERSION.toByte())
         out.put(MESSAGE_AUDIO.toByte())
-        out.put(CODEC_OPUS.toByte())
-        out.put(frame.layerId.toByte())
-        out.putShort(frame.flags.toShort())
-        out.putShort(HEADER_BYTES.toShort())
+        out.put((frame.flags and 0xFF).toByte())
+        out.put(HEADER_BYTES.toByte())
         out.putLong(frame.epoch)
         out.putLong(frame.sequence)
         out.putLong(frame.captureMonoNs)
         out.putLong(frame.samplePosition)
-        out.putInt(frame.sampleCount)
-        out.putInt(frame.payload.size)
+        out.putLong(0L) // relay_ingress_ns is stamped by the relay
+        out.putInt(SAMPLE_RATE)
+        out.putShort(frame.sampleCount.toShort())
+        out.put(channels.toByte())
+        out.put(CODEC_OPUS.toByte())
+        out.put(frame.layer.toByte())
+        out.put(0) // reserved
+        out.putShort(frame.payload.size.toShort())
+        out.putInt(0) // reserved bytes 60..63
         out.put(frame.payload)
         return out.array()
     }
