@@ -125,8 +125,15 @@ assert.match(player,/transportWatchdogReconnects/);
 assert.match(player,/Transport age: relay/);
 assert.match(player,/SAFE LOCAL must be an independent continuity path/);
 assert.match(player,/const ok=scheduleDirectBuffer\(m,reason\)/);
-assert.doesNotMatch(
-  player,
-  /function scheduleSafeLocal[\s\S]*?sabWriter\.write\(m\.pcm,meta\)/,
-  'safe-local continuity path must not depend on the precision AudioWorklet/SAB scheduler'
-);
+{
+  const a=player.indexOf('function scheduleSafeLocal');
+  const b=player.indexOf('function shouldForceSafeLocal',a);
+  assert.ok(a>=0&&b>a,'scheduleSafeLocal body not found');
+  const safeLocalBody=player.slice(a,b);
+  assert.doesNotMatch(
+    safeLocalBody,
+    /sabWriter\.write\(m\.pcm,meta\)/,
+    'safe-local continuity path must not depend on the precision AudioWorklet/SAB scheduler'
+  );
+  assert.match(safeLocalBody,/scheduleDirectBuffer\(m,reason\)/);
+}
