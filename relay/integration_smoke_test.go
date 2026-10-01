@@ -99,10 +99,12 @@ func TestSyntheticHostRelayGuestResumeSmoke(t *testing.T) {
 	host:=dialWS(t,wsFromHTTP(ts.URL,"/v1/ws/host"))
 	ack:=sendHostHello(t,host,cfg,epoch,nil)
 	if ack["v"].(float64)!=1 {t.Fatalf("host version ack=%#v",ack)}
+	if ack["server_instance_id"]!=serverInstanceID {t.Fatalf("host ack server instance=%#v",ack)}
 
 	guest:=dialWS(t,wsFromHTTP(ts.URL,"/v1/ws/guest/"+cfg.GuestToken))
 	state:=readState(t,guest)
 	if state["host_online"]!=true {t.Fatalf("host not online in guest state: %#v",state)}
+	if state["server_instance_id"]!=serverInstanceID {t.Fatalf("guest state server instance=%#v",state)}
 
 	if err:=guest.WriteJSON(map[string]any{"type":"clock_req","v":1,"id":"smoke","t0_guest_ns":uint64(123)});err!=nil{t.Fatal(err)}
 	for {
@@ -111,6 +113,7 @@ func TestSyntheticHostRelayGuestResumeSmoke(t *testing.T) {
 		var m map[string]any; if json.Unmarshal(b,&m)!=nil{continue}
 		if m["type"]=="clock_resp" {
 			if m["id"]!="smoke" {t.Fatalf("clock id=%#v",m)}
+			if m["server_instance_id"]!=serverInstanceID {t.Fatalf("clock server instance=%#v",m)}
 			if m["t1_server_ns"].(float64)>m["t2_server_ns"].(float64){t.Fatalf("clock timestamps reversed: %#v",m)}
 			break
 		}
