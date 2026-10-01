@@ -57,6 +57,9 @@ def main() -> int:
     add(checks, "host_hello_schema",
         all(k in android_client for k in required_android) and all(k in relay_proto for k in required_relay),
         "Android hello JSON keys match relay HostHello tags.")
+    add(checks, "guest_v1_path",
+        "/v1/ws/guest/" in guest_player,
+        "Guest connects to the relay v1 guest endpoint.")
     add(checks, "guest_clock_exchange",
         "clock_req" in guest_player and "t0_guest_ns" in guest_player and "clock_resp" in guest_player and "t1_server_ns" in guest_player and "t2_server_ns" in guest_player,
         "Guest implements repeated NTP-style clock exchange.")
