@@ -64,7 +64,7 @@ jobs:
         with:
           node-version: '22'
       - run: |
-          node --check relay/web/player.js
+          node --input-type=module --check < relay/web/player.js
           node --check relay/web/decoder-worker.js
           node --check relay/web/worklet.js
           node --check relay/web/sync-core.mjs
