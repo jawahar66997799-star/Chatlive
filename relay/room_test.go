@@ -169,3 +169,31 @@ func TestSubSecondRingDurationUsesPreciseSampleMath(t *testing.T) {
 		t.Fatalf("unexpected first retained sample: got %d", first)
 	}
 }
+
+
+func TestAdaptiveCommonDelayProductionSubMillisecondSlew(t *testing.T) {
+	cfg := testConfig()
+	cfg.DelayUpPerSec = 250 * time.Microsecond
+	cfg.DelayDownPerSec = 150 * time.Microsecond
+	r := newRoom(cfg, &Metrics{})
+	g := &guestConn{id: 99, send: make(chan outbound, 8)}
+	r.mu.Lock()
+	r.guests[g] = struct{}{}
+	r.mu.Unlock()
+
+	base := uint64(time.Second)
+	r.updateListenerStats(g.id, GuestControl{RecommendedDelayMS: 800}, base)
+	r.updateListenerStats(g.id, GuestControl{RecommendedDelayMS: 800}, base+uint64(time.Second))
+
+	if got := r.commonDelayMilliseconds(); got < 400.249 || got > 400.251 {
+		t.Fatalf("production up-slew mismatch: got %.6f ms want 400.250 ms", got)
+	}
+
+	// Update target down inside the controller interval, then advance one second.
+	r.updateListenerStats(g.id, GuestControl{RecommendedDelayMS: 200}, base+uint64(1500*time.Millisecond))
+	r.updateListenerStats(g.id, GuestControl{RecommendedDelayMS: 200}, base+2*uint64(time.Second))
+
+	if got := r.commonDelayMilliseconds(); got < 400.099 || got > 400.101 {
+		t.Fatalf("production down-slew mismatch: got %.6f ms want 400.100 ms", got)
+	}
+}
