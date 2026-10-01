@@ -12,6 +12,7 @@ const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
+let roomDNeedsAuthoritativeSnap=true;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
 const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
@@ -83,6 +84,7 @@ function observeServerInstance(id){
   if(!obs.changed)return false;
   metrics.serverRestarts=serverTracker.changes;
   clock.reset();pings.clear();lastEpoch=null;lastSeq=null;
+  roomDNeedsAuthoritativeSnap=true;
   resetPlayout('server-restart');
   return true;
 }
@@ -132,14 +134,14 @@ function onControl(text){
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
     const timelineReady=m.timeline_ready!==false&&Number(tl.origin_server_ns)>0;
     if(timelineReady&&tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};else roomTimeline=null;
-    const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;roomD.setTarget(ms);if(roomD.lastMs==null){roomD.current=roomD.target;roomD.lastMs=performance.now()}}
+    const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;if(roomDNeedsAuthoritativeSnap||roomD.lastMs==null){roomD.reset(ms,performance.now());roomDNeedsAuthoritativeSnap=false}else roomD.setTarget(ms)}
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline||m.reason==='host_offline'){resetPlayout('host-offline');setState('Host offline','bad')}else setState(joined?'Buffering…':'Host online',joined?'warn':'ok');
     return;
   }
   if(m.type==='hello'){
     hostOnline=!!m.hostOnline;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
-    const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.current=roomD.target=d;roomD.lastMs=performance.now();
+    const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.reset(d,performance.now());roomDNeedsAuthoritativeSnap=false;
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     setState(hostOnline?(joined?'Buffering…':'Host online'):'Host offline',hostOnline?'ok':'bad');
     return;
