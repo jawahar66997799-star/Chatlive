@@ -353,6 +353,11 @@ export function deriveGuestPipelineState(e={},nowMs=0){
   if(e.decoderFailed)
     return stateResult(S.DECODER_FAILED,S.DECODER_FAILED,e.decoderError||'The Opus decoder failed to initialize or decode.','Reload once; if it persists, inspect decoder diagnostics.','bad');
 
+  if(e.relayStreamState==='HOST_STALLED'){
+    const capture=e.hostCaptureState?(' Host reports '+e.hostCaptureState+'.'):'';
+    return stateResult(S.HOST_STALLED,S.HOST_STALLED,'The relay says the host socket is alive but live audio frames have stalled.'+capture,'The guest will stay at the live edge and resume automatically when frames return.','bad');
+  }
+
   if(binaryFrames>0 && binaryAge>3500 && relayFresh)
     return stateResult(S.HOST_STALLED,S.HOST_STALLED,'The host is still marked online, but live audio packets stopped arriving.','The guest will stay at the live edge while the host/relay path recovers.','bad');
 
