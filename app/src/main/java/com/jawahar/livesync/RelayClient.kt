@@ -162,7 +162,7 @@ class RelayClient(
             isDaemon = true
             start()
         }
-        scheduler.scheduleAtFixedRate({ pingTick() }, 3, 5, TimeUnit.SECONDS)
+        scheduler.scheduleAtFixedRate({ pingTick() }, 3, 3, TimeUnit.SECONDS)
         scheduleConnect(0)
     }
 
@@ -409,7 +409,7 @@ class RelayClient(
                 val item = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 val ageNs = SystemClock.elapsedRealtimeNanos() - item.captureMonoNs
                 if (ageNs > STALE_FRAME_NS) {
-                    droppedFrames.incrementAndGet()
+                    markDroppedFrame()
                     emitMetrics()
                     continue
                 }
