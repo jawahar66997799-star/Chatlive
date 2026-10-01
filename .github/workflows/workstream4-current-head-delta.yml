@@ -1,0 +1,78 @@
+name: JLS Workstream 4 Current-Head Delta
+
+on:
+  push:
+    branches:
+      - workstream-4-recovery-current
+  workflow_dispatch:
+
+jobs:
+  revalidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Benchmark tool syntax
+        run: |
+          python3 -m py_compile \
+            tools/benchmark/jls_workstream4_delta_sim.py \
+            tools/benchmark/jls_calibration.py \
+            tools/benchmark/jls_calibration_selftest.py \
+            tools/benchmark/jls_protocol_contract_check.py
+          bash -n tools/benchmark/jls_failure_harness.sh
+
+      - name: Current-head 20-listener delta matrix
+        run: |
+          python3 tools/benchmark/jls_workstream4_delta_sim.py \
+            --listeners 20 --duration-s 240 \
+            --json-out /tmp/jls-ws4-current.json \
+            --md-out /tmp/jls-ws4-current.md
+          cat /tmp/jls-ws4-current.md
+
+      - name: Calibration synthetic self-test
+        run: python3 tools/benchmark/jls_calibration_selftest.py
+
+      - name: Android relay guest static contract
+        run: python3 tools/benchmark/jls_protocol_contract_check.py --root . --json-out /tmp/jls-contract.json
+
+      - name: Guest deterministic synchronization and asset tests
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/assets.test.mjs
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: false
+
+      - name: Relay tests
+        working-directory: relay
+        run: |
+          go mod tidy
+          go test ./...
+
+      - name: Current production controller assertions
+        run: |
+          grep -q 'JLS_COMMON_DELAY_MS", 400' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MIN_MS", 150' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MAX_MS", 1000' relay/main.go
+          grep -q 'JLS_DELAY_STATS_TTL_MS", 10000' relay/main.go
+          grep -q 'JLS_DELAY_UPDATE_MS", 1000' relay/main.go
+          grep -q 'JLS_DELAY_UP_US_PER_SEC", 250' relay/main.go
+          grep -q 'JLS_DELAY_DOWN_US_PER_SEC", 150' relay/main.go
+          grep -q 'JLS_JOIN_GUARD_MS", 150' relay/main.go
+          grep -q 'const hysteresisNS = uint64(10 \* time.Millisecond)' relay/room.go
+          grep -q 'upPerSec:.25,downPerSec:.15' relay/web/player.js
+          grep -q 'server_instance_id' relay/main.go
+          grep -q '/vendor/libopus-wasm/index.js' relay/web/decoder-worker.js
+          ! grep -q 'cdn.jsdelivr.net' relay/web/decoder-worker.js
+          grep -q 'TestAdaptiveCommonDelayProductionSubMillisecondSlew' relay/room_test.go
+          grep -q 'TestSubSecondRingDurationUsesPreciseSampleMath' relay/room_test.go
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-workstream4-current-head-delta
+          path: |
+            /tmp/jls-ws4-current.json
+            /tmp/jls-ws4-current.md
+            /tmp/jls-contract.json
