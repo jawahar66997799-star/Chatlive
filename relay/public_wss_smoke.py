@@ -26,9 +26,20 @@ async def main():
             state = json.loads(await asyncio.wait_for(guest.recv(), 10))
             t0 = time.monotonic_ns()
             await guest.send(json.dumps({"type":"clock_req","v":1,"id":"smoke","t0_guest_ns":t0}))
-            clock = json.loads(await asyncio.wait_for(guest.recv(), 10))
-            payload = bytes(120)
+            clock = None
             binary = 0
+            clock_deadline = time.monotonic() + 10
+            while time.monotonic() < clock_deadline and clock is None:
+                msg = await asyncio.wait_for(guest.recv(), 2)
+                if isinstance(msg, bytes):
+                    binary += 1
+                else:
+                    parsed = json.loads(msg)
+                    if parsed.get("type") == "clock_resp":
+                        clock = parsed
+            if clock is None:
+                raise RuntimeError("clock_resp not received")
+            payload = bytes(120)
             for seq in range(12):
                 hdr = struct.pack(wire,b"JLS1",1,1,0,64,epoch,seq,time.monotonic_ns(),seq*960,0,48000,960,2,1,0,0,len(payload),0)
                 await host.send(hdr + payload)
