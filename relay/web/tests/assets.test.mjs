@@ -137,3 +137,9 @@ assert.match(player,/const ok=scheduleDirectBuffer\(m,reason\)/);
   );
   assert.match(safeLocalBody,/scheduleDirectBuffer\(m,reason\)/);
 }
+
+
+assert.match(player,/directNextTime=now\+\.300/);
+assert.match(player,/function holdWakeLock/);
+assert.match(player,/navigator\.wakeLock\.request\('screen'\)/);
+assert.match(player,/Wake lock:/);
