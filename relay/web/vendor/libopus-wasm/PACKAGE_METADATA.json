@@ -6,6 +6,10 @@
     "type": "git",
     "url": "git+https://github.com/openclaw/libopus-wasm.git"
   },
+  "npmDistIntegrity": "sha512-dt2u6KyBe1IONzZA2Q9TXQbmLsZ6l1vLqgt4n9XC/sE70BegLgwC/hcbZp41aJgURAqalYdnPg0wGSI2IwHyvA==",
+  "npmDistShasumSha1": "841ccb245755aaa8c447c22cdb2b07d4d686cccc",
+  "npmTarball": "https://registry.npmjs.org/libopus-wasm/-/libopus-wasm-0.4.1.tgz",
+  "npmTarballSha256": "f645938adcd3381dcae9827ef71248218eaeb8308b6339bd568d1c43a64c5ef8",
   "browserRuntimeFiles": [
     "index.js",
     "generated/libopus.generated.mjs"
