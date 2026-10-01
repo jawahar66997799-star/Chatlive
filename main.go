@@ -56,6 +56,7 @@ type Config struct {
 	MaxIPConns          int
 	MetricsToken        string
 	TrustProxyHeaders   bool
+	TrustProxyHeaders   bool
 }
 
 func loadConfig() (Config, error) {
@@ -82,6 +83,7 @@ func loadConfig() (Config, error) {
 		IdleTTL:             time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
 		MaxIPConns:          envInt("JLS_MAX_IP_CONNECTIONS", 32),
 		MetricsToken:        os.Getenv("JLS_METRICS_TOKEN"),
+		TrustProxyHeaders:   envBool("JLS_TRUST_PROXY_HEADERS", false),
 		TrustProxyHeaders:   envBool("JLS_TRUST_PROXY_HEADERS", false),
 	}
 	if len(cfg.RoomID) < 32 || len(cfg.HostSecret) < 32 || len(cfg.GuestToken) < 22 {
@@ -120,6 +122,21 @@ func envInt(k string, d int) int {
 		return d
 	}
 	return n
+}
+
+func envBool(k string, d bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(k)))
+	if v == "" {
+		return d
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return d
+	}
 }
 
 func envBool(k string, d bool) bool {
