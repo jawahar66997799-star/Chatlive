@@ -221,3 +221,30 @@ func TestGuestStateEpochIsExactDecimalString(t *testing.T) {
 		t.Fatalf("epoch string mismatch: %q", got)
 	}
 }
+
+
+func TestIdleCleanupResetsCommonDelayBaseline(t *testing.T) {
+	cfg := testConfig()
+	cfg.CommonDelay = 400 * time.Millisecond
+	r := newRoom(cfg, &Metrics{})
+
+	r.mu.Lock()
+	r.commonDelayNS = uint64((850 * time.Millisecond).Nanoseconds())
+	r.listenerStats[7] = listenerStat{recommendedDelayMS: 850, updatedNS: 1}
+	r.lastDelayAdjustNS = 1
+	r.offlineAt = time.Now().Add(-3 * time.Minute)
+	r.mu.Unlock()
+
+	r.cleanupIfIdle(2 * time.Minute)
+
+	if got := r.commonDelayMilliseconds(); got < 399.9 || got > 400.1 {
+		t.Fatalf("idle cleanup common delay = %.3f ms, want 400 ms baseline", got)
+	}
+	r.mu.Lock()
+	stats := len(r.listenerStats)
+	lastAdjust := r.lastDelayAdjustNS
+	r.mu.Unlock()
+	if stats != 0 || lastAdjust != 0 {
+		t.Fatalf("idle cleanup retained adaptive history: stats=%d lastAdjust=%d", stats, lastAdjust)
+	}
+}
