@@ -1,0 +1,27 @@
+name: Relay CI
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay-ci.yml'
+  pull_request:
+    paths:
+      - 'relay/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: relay/go.sum
+      - run: go mod tidy
+      - run: go test -race ./...
+      - run: go vet ./...
