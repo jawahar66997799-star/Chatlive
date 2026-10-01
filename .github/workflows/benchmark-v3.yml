@@ -1,0 +1,47 @@
+name: JLS Benchmark CI v3
+
+on:
+  push:
+    branches:
+      - workstream-4-benchmarking-v3
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax
+        run: |
+          python3 -m py_compile tools/benchmark/*.py
+          bash -n tools/benchmark/jls_failure_harness.sh
+          bash -n tools/benchmark/jls_generate_e2e_video.sh
+      - name: 20-listener simulation
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py --listeners 20 --duration-s 300 --scenario all --mode both --json-out /tmp/jls-sim.json --md-out /tmp/jls-sim.md
+          cat /tmp/jls-sim.md
+      - name: Buffer sweep
+        run: |
+          python3 tools/benchmark/jls_buffer_sweep.py --listeners 20 --duration-s 120 --json-out /tmp/jls-sweep.json | tee /tmp/jls-sweep.md
+      - name: Calibration self-test
+        run: python3 tools/benchmark/jls_calibration_selftest.py
+      - name: Protocol contract
+        run: python3 tools/benchmark/jls_protocol_contract_check.py --root . --json-out /tmp/jls-contract.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+      - name: Relay compile
+        working-directory: relay
+        run: |
+          go mod tidy
+          go test ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-benchmark-v3
+          path: |
+            /tmp/jls-sim.json
+            /tmp/jls-sim.md
+            /tmp/jls-sweep.json
+            /tmp/jls-sweep.md
+            /tmp/jls-contract.json
