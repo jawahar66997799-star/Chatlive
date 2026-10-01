@@ -8,10 +8,10 @@ set -euo pipefail
 # Any later YouTube transcode delay is part of the measured source path and must
 # not be assumed away.
 
-DURATION="\${1:-120}"
-OUT="\${2:-jls_e2e_reference.mov}"
+DURATION="${1:-120}"
+OUT="${2:-jls_e2e_reference.mov}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-TMP="\${TMPDIR:-/tmp}/jls-e2e-$$"
+TMP="${TMPDIR:-/tmp}/jls-e2e-$$"
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -20,15 +20,15 @@ command -v ffmpeg >/dev/null || { echo "ffmpeg is required" >&2; exit 2; }
 python3 "$DIR/jls_generate_e2e_signal.py" \
   --duration-s "$DURATION" \
   --out "$TMP/reference.wav" \
-  --manifest "\${OUT%.*}.json"
+  --manifest "${OUT%.*}.json"
 
 ffmpeg -hide_banner -loglevel error -y \
-  -f lavfi -i "color=c=black:s=1280x720:r=60:d=\${DURATION}" \
+  -f lavfi -i "color=c=black:s=1280x720:r=60:d=${DURATION}" \
   -i "$TMP/reference.wav" \
   -vf "drawbox=x=0:y=0:w=iw:h=ih:color=white@1:t=fill:enable='lt(mod(t,1),0.10)'" \
   -c:v libx264 -preset medium -crf 16 -pix_fmt yuv420p \
   -c:a pcm_s16le -ar 48000 -ac 2 \
   -shortest "$OUT"
 
-echo "Created $OUT and \${OUT%.*}.json"
+echo "Created $OUT and ${OUT%.*}.json"
 echo "Reference rule: integer-second visual flash and click share the same nominal source timestamp."
