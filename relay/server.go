@@ -230,7 +230,6 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 		return
 	}
 
-	log.Printf("guest connected id=%d ip=%s resume=%t", g.id, ip, hasResume)
 
 	rateWindow := time.Now()
 	rateCount := 0
