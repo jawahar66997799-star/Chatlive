@@ -224,7 +224,7 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 	g := &guestConn{
 		id:   s.guestID.Add(1),
 		conn: c,
-		send: make(chan outbound, 1024),
+		send: make(chan outbound, 200),
 	}
 	defer func() {
 		g.closed.Store(true)
@@ -301,7 +301,7 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 }
 
 func (s *Server) guestWriter(g *guestConn) {
-	ping := time.NewTicker(20 * time.Second)
+	ping := time.NewTicker(8 * time.Second)
 	defer ping.Stop()
 	for {
 		select {
