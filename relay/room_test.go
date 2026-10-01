@@ -118,11 +118,16 @@ func TestAdaptiveCommonDelayUsesRoomP95AndSlew(t *testing.T) {
 		t.Fatalf("adaptive up-slew mismatch: got %.3f ms want 460 ms", got)
 	}
 
-	// Move every listener recommendation down. Down-slew is 10 ms/s.
+	// Move every listener recommendation down inside the update interval so the
+	// whole room sample set changes before the next controller step.
+	pre := base + uint64(1500*time.Millisecond)
+	r.updateListenerStats(g1.id, GuestControl{RecommendedDelayMS: 200}, pre)
+	r.updateListenerStats(g2.id, GuestControl{RecommendedDelayMS: 210}, pre)
+	r.updateListenerStats(g3.id, GuestControl{RecommendedDelayMS: 220}, pre)
+
+	// At the next one-second boundary, down-slew is 10 ms/s.
 	now := base + 2*uint64(time.Second)
 	r.updateListenerStats(g1.id, GuestControl{RecommendedDelayMS: 200}, now)
-	r.updateListenerStats(g2.id, GuestControl{RecommendedDelayMS: 210}, now)
-	r.updateListenerStats(g3.id, GuestControl{RecommendedDelayMS: 220}, now)
 	if got := r.commonDelayMilliseconds(); got < 449.9 || got > 450.1 {
 		t.Fatalf("adaptive down-slew mismatch: got %.3f ms want 450 ms", got)
 	}
