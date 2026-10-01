@@ -21,12 +21,20 @@ const (
 	outboundClock
 )
 
+const (
+	streamConnectedNoHost      = "CONNECTED_NO_HOST"
+	streamHostConnectedNoAudio = "HOST_CONNECTED_NO_AUDIO"
+	streamAudioFlowing         = "AUDIO_FLOWING"
+	streamHostStalled          = "HOST_STALLED"
+)
+
 type outbound struct {
 	kind       outboundKind
 	data       []byte
 	clockID    string
 	t0GuestNS  uint64
 	t1ServerNS uint64
+	deadlineNS uint64
 }
 
 type guestConn struct {
@@ -52,9 +60,13 @@ type Room struct {
 	hostSecret string
 	guestToken string
 
-	hostOnline bool
-	hostGen    uint64
-	offlineAt  time.Time
+	hostOnline        bool
+	hostGen           uint64
+	offlineAt         time.Time
+	streamState       string
+	hostAdvisoryState string
+	lastAudioNS       uint64
+	hostStallAfterNS  uint64
 
 	epoch        uint64
 	lastSeq      uint64
@@ -109,6 +121,8 @@ func newRoom(cfg Config, metrics *Metrics) *Room {
 		delayUpNSPerSec:  uint64(cfg.DelayUpPerSec.Nanoseconds()),
 		delayDownNSPerSec:uint64(cfg.DelayDownPerSec.Nanoseconds()),
 		joinGuardNS:      uint64(cfg.JoinGuard.Nanoseconds()),
+		hostStallAfterNS: uint64(cfg.HostStallAfter.Nanoseconds()),
+		streamState:      streamConnectedNoHost,
 		maxGuests:     cfg.MaxGuests,
 		sampleRate:    48000,
 		channels:      2,
@@ -144,6 +158,8 @@ func (r *Room) beginHost(h HostHello) (generation uint64, resumeAfter uint64, ep
 	generation = r.hostGen
 	r.hostOnline = true
 	r.offlineAt = time.Time{}
+	r.lastAudioNS = 0
+	r.streamState = streamHostConnectedNoAudio
 
 	if r.epoch != h.Epoch {
 		r.resetEpochLocked(h)
@@ -170,6 +186,7 @@ func (r *Room) resetEpochLocked(h HostHello) {
 	r.layer = h.Layer
 	r.originServerNS = 0
 	r.originSample = 0
+	r.lastAudioNS = 0
 	r.ring = nil
 	r.ringBytes = 0
 	r.metrics.epochChanges.Add(1)
@@ -180,6 +197,7 @@ func (r *Room) endHost(generation uint64) {
 	if generation == r.hostGen && r.hostOnline {
 		r.hostOnline = false
 		r.offlineAt = time.Now()
+		r.streamState = streamConnectedNoHost
 		r.broadcastStateLocked("host_offline")
 	}
 	r.mu.Unlock()
@@ -212,6 +230,7 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 	}
 
 	firstFrame := !r.haveFrame
+	previousStreamState := r.streamState
 	f.stampRelayIngress(serverNS)
 	if firstFrame {
 		r.originServerNS = serverNS
@@ -227,7 +246,9 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 
 	r.lastSeq = f.Sequence
 	r.lastSample = f.SamplePosition
+	r.lastAudioNS = serverNS
 	r.haveFrame = true
+	r.streamState = streamAudioFlowing
 	r.ring = append(r.ring, f)
 	r.ringBytes += len(f.Raw)
 	r.evictLocked()
@@ -241,19 +262,22 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 	// timeline instead of a zero/uninitialized origin.
 	if firstFrame {
 		r.broadcastStateLocked("timeline_started")
+	} else if previousStreamState != streamAudioFlowing {
+		r.broadcastStateLocked("audio_resumed")
 	}
 
+	deadlineNS := f.NominalServerNS + r.commonDelayNS
 	for g := range r.guests {
 		if g.closed.Load() {
 			continue
 		}
 		select {
-		case g.send <- outbound{kind: outboundBinary, data: f.Raw}:
+		case g.send <- outbound{kind: outboundBinary, data: f.Raw, deadlineNS: deadlineNS}:
 		default:
 			g.dropped.Add(1)
 			r.metrics.backpressureDrops.Add(1)
-			g.closed.Store(true)
-			_ = g.conn.Close()
+			r.metrics.slowGuestDisconnects.Add(1)
+			go closeGuestTooSlow(g)
 		}
 	}
 	return nil
@@ -305,7 +329,7 @@ func (r *Room) addGuest(g *guestConn, nowNS uint64, resumeEpoch, resumeSeq uint6
 			if f.Sequence < startSeq {
 				continue
 			}
-			if !enqueue(g, outbound{kind: outboundBinary, data: f.Raw}) {
+			if !enqueue(g, outbound{kind: outboundBinary, data: f.Raw, deadlineNS: f.NominalServerNS + r.commonDelayNS}) {
 				delete(r.guests, g)
 				r.metrics.guestsCurrent.Add(-1)
 				return errors.New("guest queue full during ring replay")
@@ -315,6 +339,16 @@ func (r *Room) addGuest(g *guestConn, nowNS uint64, resumeEpoch, resumeSeq uint6
 	return nil
 }
 
+func closeGuestTooSlow(g *guestConn) {
+	if g.closed.Swap(true) {
+		return
+	}
+	_ = g.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1013, streamGuestTooSlow), time.Now().Add(250*time.Millisecond))
+	_ = g.conn.Close()
+}
+
+const streamGuestTooSlow = "GUEST_TOO_SLOW"
+
 func (r *Room) removeGuest(g *guestConn) {
 	r.mu.Lock()
 	if _, ok := r.guests[g]; ok {
@@ -323,6 +357,33 @@ func (r *Room) removeGuest(g *guestConn) {
 		r.metrics.guestsCurrent.Add(-1)
 	}
 	r.mu.Unlock()
+}
+
+func (r *Room) updateHostState(state string) {
+	if state == "" || len(state) > 64 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state == r.hostAdvisoryState {
+		return
+	}
+	r.hostAdvisoryState = state
+	r.broadcastStateLocked("host_state")
+}
+
+func (r *Room) refreshLiveness(nowNS uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hostOnline || !r.haveFrame || r.lastAudioNS == 0 || nowNS <= r.lastAudioNS {
+		return
+	}
+	if nowNS-r.lastAudioNS < r.hostStallAfterNS || r.streamState == streamHostStalled {
+		return
+	}
+	r.streamState = streamHostStalled
+	r.metrics.hostStalls.Add(1)
+	r.broadcastStateLocked("host_stalled")
 }
 
 func (r *Room) updateListenerStats(guestID uint64, m GuestControl, nowNS uint64) {
@@ -509,10 +570,20 @@ func (r *Room) stateLocked(nowNS uint64, resumeEpoch, resumeSeq uint64, hasResum
 		}
 	}
 
+	audioAgeMS := uint64(0)
+	if r.lastAudioNS > 0 && nowNS >= r.lastAudioNS {
+		audioAgeMS = (nowNS - r.lastAudioNS) / uint64(time.Millisecond)
+	}
+
 	return map[string]any{
 		"type":                    "state",
 		"v":                       protocolVersion,
 		"host_online":             r.hostOnline,
+		"stream_state":            r.streamState,
+		"host_capture_state":      r.hostAdvisoryState,
+		"last_audio_server_ns":    r.lastAudioNS,
+		"last_audio_age_ms":       audioAgeMS,
+		"host_stall_after_ms":     r.hostStallAfterNS / uint64(time.Millisecond),
 		"server_instance_id":      serverInstanceID,
 		"timeline_ready":          r.haveFrame,
 		"room_id":                 r.id,
@@ -566,6 +637,9 @@ func (r *Room) cleanupIfIdle(ttl time.Duration) {
 	r.lastSample = 0
 	r.originServerNS = 0
 	r.originSample = 0
+	r.lastAudioNS = 0
+	r.streamState = streamConnectedNoHost
+	r.hostAdvisoryState = ""
 	r.listenerStats = make(map[uint64]listenerStat)
 	r.commonDelayNS = r.defaultDelayNS
 	r.lastDelayAdjustNS = 0
