@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - youtube-live-sync
+    paths:
+      - "app/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/build-sync-apk.yml"
   workflow_dispatch:
+
+concurrency:
+  group: android-host-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
