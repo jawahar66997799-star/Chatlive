@@ -245,7 +245,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 CaptureStateStore.state.collect { s ->
-                    captureStatus.text = "Capture: " + s.captureHealth.name
+                    val captureLabel = if (s.captureHealth == CaptureHealth.SOURCE_PAUSED) "SOURCE_STATE_UNKNOWN" else s.captureHealth.name\n                    captureStatus.text = "Capture: " + captureLabel
                     relayStatus.text = "Relay: " + s.relayState.name
 
                     val normalized = (((s.rmsDb + 60.0) / 60.0) * 100.0)
@@ -270,7 +270,7 @@ class MainActivity : ComponentActivity() {
                         append(s.pipeline.compactSummary())
                         append("\nBroken stage: ")
                         append(s.pipeline.brokenStage?.label ?: "NONE")
-                        append("\nQueues: encoder ${s.encoderQueueDepth} · uplink ${s.sendBufferDepth} · WSS ${s.webSocketQueueBytes} B")
+                        append("\nSystem media playback hint: ")\n                        append(if (s.activePlayback) "ACTIVE" else "NOT OBSERVED")\n                        append(" (not package-specific)")\n                        append("\nQueues: encoder ${s.encoderQueueDepth} · uplink ${s.sendBufferDepth} · WSS ${s.webSocketQueueBytes} B")
                         append("\nAges ms: read ${s.lastReadAgeMs ?: -1} · PCM ${s.lastPcmFrameAgeMs ?: -1} · encoded ${s.lastEncodedAgeMs ?: -1} · sent ${s.lastSendAgeMs ?: -1} · relay ${s.lastRelayControlAgeMs ?: -1}")
                         append("\nReconnects: ${s.reconnects}")
                         append("\nCaptured: ${s.framesCaptured} frames · encoded: ${s.packetsEncoded} packets")
