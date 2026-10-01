@@ -238,7 +238,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 CaptureStateStore.state.collect { s ->
-                    captureStatus.text = "Capture: " + s.health.name
+                    captureStatus.text = "Capture: " + s.captureHealth.name
                     relayStatus.text = "Relay: " + s.relayState.name
 
                     val normalized = (((s.rmsDb + 60.0) / 60.0) * 100.0)
@@ -276,7 +276,7 @@ class MainActivity : ComponentActivity() {
 
     private fun isCaptureLikelyRunning(s: CaptureSnapshot): Boolean {
         return s.secondsRunning > 0 &&
-            s.health !in setOf(
+            s.captureHealth !in setOf(
                 CaptureHealth.IDLE,
                 CaptureHealth.ERROR,
                 CaptureHealth.PROJECTION_STOPPED
