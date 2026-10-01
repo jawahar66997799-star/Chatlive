@@ -2,6 +2,7 @@ package com.jawahar.livesync
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
@@ -9,11 +10,13 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -115,6 +118,10 @@ class MainActivity : ComponentActivity() {
             textSize = 17f
             text = "Relay: DISABLED"
             setPadding(0, 6, 0, 12)
+            setOnLongClickListener {
+                showRelaySettings()
+                true
+            }
         }
 
         meter = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -346,6 +353,98 @@ class MainActivity : ComponentActivity() {
                 "Share host log"
             )
         )
+    }
+
+
+    private fun showRelaySettings() {
+        val current = RelayConfig.load(this)
+
+        fun field(hintText: String, value: String, secret: Boolean = false): EditText {
+            return EditText(this).apply {
+                hint = hintText
+                setText(value)
+                isSingleLine = true
+                if (secret) {
+                    inputType =
+                        InputType.TYPE_CLASS_TEXT or
+                            InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+            }
+        }
+
+        val relayInput = field(
+            "wss://relay.example",
+            current.relayBaseUrl
+        )
+        val roomInput = field(
+            "Room ID (32+ chars)",
+            current.room
+        )
+        val hostInput = field(
+            "Host secret (32+ chars)",
+            current.hostToken,
+            secret = true
+        )
+        val guestTokenInput = field(
+            "Guest token (22+ chars)",
+            current.guestToken,
+            secret = true
+        )
+        val guestBaseInput = field(
+            "Guest base URL (optional)",
+            current.guestBaseUrl
+        )
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(36, 0, 36, 0)
+            addView(relayInput)
+            addView(roomInput)
+            addView(hostInput)
+            addView(guestTokenInput)
+            addView(guestBaseInput)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Relay setup")
+            .setMessage(
+                "Advanced integration setting. Long-press Relay to reopen. " +
+                    "Stop and restart hosting after saving."
+            )
+            .setView(box)
+            .setPositiveButton("SAVE") { _, _ ->
+                val relayUrl = relayInput.text.toString().trim()
+                val roomId = roomInput.text.toString().trim()
+                val hostSecret = hostInput.text.toString().trim()
+                val guestToken = guestTokenInput.text.toString().trim()
+                val guestBase = guestBaseInput.text.toString().trim()
+
+                if (!relayUrl.startsWith("wss://")) {
+                    renderError("Relay URL must use wss://")
+                } else if (roomId.length < 32) {
+                    renderError("Room ID must be at least 32 characters.")
+                } else if (hostSecret.length < 32) {
+                    renderError("Host secret must be at least 32 characters.")
+                } else if (guestToken.length < 22) {
+                    renderError("Guest token must be at least 22 characters.")
+                } else {
+                    RelayConfig.saveOverride(
+                        this,
+                        relayUrl,
+                        roomId,
+                        hostSecret,
+                        guestToken,
+                        guestBase
+                    )
+                    roomText.text = "Room: $roomId"
+                    guestUrlText.text =
+                        "Guest link: " + RelayConfig.load(this).guestUrl()
+                    detail.text =
+                        "Relay settings saved. Stop and START a fresh host session."
+                }
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
     }
 
     private fun renderError(message: String) {

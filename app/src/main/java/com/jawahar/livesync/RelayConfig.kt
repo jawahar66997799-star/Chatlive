@@ -61,33 +61,27 @@ data class RelayConfig(
 
         fun load(context: Context): RelayConfig {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val defaultRoom = BuildConfig.DEFAULT_ROOM.trim()
-            val room = if (defaultRoom.isNotBlank()) {
-                defaultRoom
-            } else {
-                prefs.getString(KEY_ROOM, null).orEmpty().ifBlank {
+            val room = prefs.getString(KEY_ROOM, "").orEmpty().trim()
+                .ifBlank { BuildConfig.DEFAULT_ROOM.trim() }
+                .ifBlank {
                     randomToken(24).also { prefs.edit().putString(KEY_ROOM, it).apply() }
                 }
-            }
 
-            val relay = BuildConfig.DEFAULT_RELAY_URL.trim().ifBlank {
-                prefs.getString(KEY_RELAY, "").orEmpty().trim()
-            }
-            val token = BuildConfig.DEFAULT_HOST_TOKEN.trim().ifBlank {
-                prefs.getString(KEY_TOKEN, "").orEmpty().trim()
-            }
-            val guestToken = BuildConfig.DEFAULT_GUEST_TOKEN.trim().ifBlank {
-                prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
-            }
-            val guest = BuildConfig.DEFAULT_GUEST_BASE_URL.trim().ifBlank {
-                prefs.getString(KEY_GUEST, "").orEmpty().trim()
-            }
+            val relay = prefs.getString(KEY_RELAY, "").orEmpty().trim()
+                .ifBlank { BuildConfig.DEFAULT_RELAY_URL.trim() }
+            val token = prefs.getString(KEY_TOKEN, "").orEmpty().trim()
+                .ifBlank { BuildConfig.DEFAULT_HOST_TOKEN.trim() }
+            val guestToken = prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
+                .ifBlank { BuildConfig.DEFAULT_GUEST_TOKEN.trim() }
+            val guest = prefs.getString(KEY_GUEST, "").orEmpty().trim()
+                .ifBlank { BuildConfig.DEFAULT_GUEST_BASE_URL.trim() }
             return RelayConfig(relay, room, token, guestToken, guest)
         }
 
         fun saveOverride(
             context: Context,
             relayBaseUrl: String,
+            room: String,
             hostToken: String,
             guestToken: String,
             guestBaseUrl: String = ""
@@ -95,6 +89,7 @@ data class RelayConfig(
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putString(KEY_RELAY, relayBaseUrl.trim())
+                .putString(KEY_ROOM, room.trim())
                 .putString(KEY_TOKEN, hostToken.trim())
                 .putString(KEY_GUEST_TOKEN, guestToken.trim())
                 .putString(KEY_GUEST, guestBaseUrl.trim())

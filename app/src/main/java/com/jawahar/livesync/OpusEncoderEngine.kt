@@ -1,8 +1,8 @@
 package com.jawahar.livesync
 
-import io.github.jaredmdobson.concentus.OpusApplication
-import io.github.jaredmdobson.concentus.OpusEncoder
-import io.github.jaredmdobson.concentus.OpusSignal
+import org.concentus.OpusApplication
+import org.concentus.OpusEncoder
+import org.concentus.OpusSignal
 import kotlin.system.measureNanoTime
 
 data class EncodedOpus(
