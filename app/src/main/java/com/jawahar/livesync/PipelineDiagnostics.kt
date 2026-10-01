@@ -161,7 +161,7 @@ object PipelineDiagnosticEvaluator {
             PipelineStage.RELAY_ACK_STATE ->
                 "RELAY_ACK/STATE failure: no relay control response for ${input.lastRelayControlAgeMs ?: -1} ms."
             null -> when (input.captureHealth) {
-                CaptureHealth.SOURCE_PAUSED -> "Pipeline healthy; target YouTube playback is not active."
+                CaptureHealth.SOURCE_PAUSED -> "Pipeline transport healthy; PCM is silent, but public Android playback callbacks are not package-identifiable, so YouTube/YT Music playback state remains unknown."
                 CaptureHealth.SOURCE_SILENT -> "Pipeline healthy; PCM is currently digital silence."
                 else -> "Pipeline healthy through relay control response."
             }
