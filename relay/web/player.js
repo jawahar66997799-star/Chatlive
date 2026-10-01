@@ -79,7 +79,7 @@ function diagnosePipeline(){
   }else if(!audio||!node){
     code='AUDIO_ENGINE_NOT_READY';message='Decoded audio exists but the browser audio engine is not ready.';action='Tap TO LISTEN once; if needed reload the page.';
   }else if(audio.state!=='running'){
-    code='AUDIO_GESTURE_REQUIRED';message='Decoded audio exists but browser playback is '+audio.state+'.';action='Tap RESUME LISTENING / TAP TO LISTEN.';
+    code='AUDIO_GESTURE_REQUIRED';message='Decoded audio exists but browser playback is '+audio.state+'.';action='Tap RESUME AUDIO / TAP TO LISTEN.';
   }else if(!joined){
     code='JOIN_STATE_STUCK';message='Browser audio is running but the join state is stuck.';action='Automatic repair is being attempted now.';
   }else if(!clock.ready){
@@ -156,7 +156,7 @@ async function ensureAudio(){
   metrics.audioState=audio.state;sampleOutputClock();
   audio.addEventListener('statechange',()=>{
     metrics.audioState=audio.state;
-    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Playback interrupted','bad')}
+    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';setState('Playback interrupted','bad')}
     else if(audio.state==='running'&&joined&&hostOnline)showContinuityState(true);
   });
 }
@@ -173,7 +173,7 @@ async function rebuildAudioEngine(reason){
     await audio.resume();
     if(audio.state!=='running')throw new Error('AudioContext '+audio.state);
     joined=true;audioEngineRebuilds++;metrics.audioEngineRebuilds=audioEngineRebuilds;metrics.selfHeals++;
-    ui.join.disabled=true;ui.join.textContent='LISTENING';
+    ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';
     metrics.playoutGate='audio engine rebuilt: '+reason;
     note('Browser audio engine rebuilt automatically. Live playback is resuming.');
   }catch(err){
@@ -603,7 +603,7 @@ async function holdWakeLock(){
   }catch{}
 }
 async function unlock(){
-  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='LISTENING';resetPlayout('join');setState(hostOnline?'Preparing audio…':'Host offline',hostOnline?'warn':'bad');note('Live audio only. No YouTube or song download is needed on this device.')}
+  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';resetPlayout('join');showContinuityState(false);note('Live audio only. No YouTube or song download is needed on this device.')}
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
 ui.join.addEventListener('click',unlock);
@@ -623,7 +623,7 @@ function resumeVisible(){
     if(!wasRunning)resetPlayout('resume');
     showContinuityState(hostOnline&&audio.state==='running')
   })
-  .catch(()=>{ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Tap to resume','warn')});
+  .catch(()=>{ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';setState('Tap to resume','warn')});
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
