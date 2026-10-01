@@ -1,0 +1,79 @@
+name: JLS Workstream 4 Comparative Architecture
+
+on:
+  push:
+    branches:
+      - workstream-4-comparative-final-freeze
+  workflow_dispatch:
+
+jobs:
+  comparative:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comparative model syntax and run
+        run: |
+          python3 -m py_compile tools/benchmark/jls_architecture_compare.py
+          python3 tools/benchmark/jls_architecture_compare.py \
+            --samples 5000 \
+            --json-out /tmp/jls-architecture-comparison.json \
+            --md-out /tmp/jls-architecture-comparison.md
+          cat /tmp/jls-architecture-comparison.md
+
+      - name: Current guest deterministic sync tests
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/assets.test.mjs
+          node relay/web/tests/pipeline-state.test.mjs
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: false
+
+      - name: Current relay tests
+        working-directory: relay
+        run: |
+          go mod tidy
+          go test ./...
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android SDK 36
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Current Android diagnostics/unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Current architecture assertions
+        run: |
+          grep -q 'targetBitrateBps: Int = 144_000' app/src/main/java/com/jawahar/livesync/OpusEncoderEngine.kt
+          grep -q 'setUseInbandFEC(false)' app/src/main/java/com/jawahar/livesync/OpusEncoderEngine.kt
+          grep -q 'suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000})' relay/web/player.js
+          grep -q 'roomD=new SlewValue({initial:850,floor:400,ceiling:1000,upPerSec:.25,downPerSec:.15})' relay/web/player.js
+          grep -q 'relayAge>3500' relay/web/player.js
+          grep -q 'function diagnosePipeline()' relay/web/player.js
+          grep -q 'NO_HOST_AUDIO' relay/web/player.js
+          grep -q 'OUTPUT_SILENT' relay/web/player.js
+          grep -q 'PipelineDiagnosticEvaluator' app/src/main/java/com/jawahar/livesync/PipelineDiagnostics.kt
+          grep -q 'JLS_HOST_STALL_MS", 1500' relay/main.go
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-comparative-architecture
+          path: |
+            /tmp/jls-architecture-comparison.json
+            /tmp/jls-architecture-comparison.md
