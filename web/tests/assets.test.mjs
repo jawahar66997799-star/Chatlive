@@ -105,3 +105,14 @@ assert.doesNotMatch(player,/decoder\?\.postMessage\(\{type:'reset'\}\)/,
 assert.match(worker,/webDecoder\.reset\(\);[\s\S]*webDecoder\.configure\(\{codec:'opus'/,
   'explicit WebCodecs reset must immediately reconfigure the decoder');
 assert.match(worker,/type:'decoder-reset-ready'/);
+
+
+assert.match(player,/numberOfInputs:0/);
+assert.match(player,/workletAlive/);
+assert.match(player,/workletProcessorErrors/);
+assert.match(player,/schedulerErrors/);
+assert.match(player,/function rebuildAudioEngine/);
+assert.match(player,/function scheduleDirectBuffer/);
+assert.match(player,/DIRECT BUFFER playing/);
+assert.match(player,/sabWriter\.write\(m\.pcm,meta\)/);
+assert.match(worklet,/processQuanta/);
