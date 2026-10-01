@@ -1,7 +1,7 @@
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 
 class PI {
-  constructor(){ this.deadbandMs=1; this.kp=18; this.ki=.35; this.maxPpm=350; this.i=0; this.ppm=0; }
+  constructor(){ this.deadbandMs=1; this.kp=18; this.ki=.35; this.maxPpm=300; this.i=0; this.ppm=0; }
   reset(){this.i=0;this.ppm=0;}
   update(errorMs,dt){
     const e=Math.abs(errorMs)<=this.deadbandMs?0:errorMs-Math.sign(errorMs)*this.deadbandMs;
@@ -19,7 +19,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     this.underruns=0; this.lateFrames=0; this.hardResyncs=0; this.overruns=0;
     this.lastMetricFrame=0; this.lastBoundaryFrame=0;
     this.sab=null; this.sabCtrl=null; this.sabCapacity=0;
-    this.fadeFrames=Math.max(32,Math.round(sampleRate*.005));
+    this.fadeFrames=Math.max(32,Math.round(sampleRate*.010));
     this.tailL=new Float32Array(this.fadeFrames); this.tailR=new Float32Array(this.fadeFrames); this.tailWrite=0;
     this.crossfade=null;
     this.port.onmessage=e=>this.onMessage(e.data||{});
@@ -116,14 +116,15 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
 
   process(_inputs,outputs){
     const out=outputs[0],L=out[0],R=out[1]||out[0]; L.fill(0);R.fill(0);
-    let wroteAudio=false;
+    let wroteAudio=false, underrunThisQuantum=false;
     for(let i=0;i<L.length;i++){
       const nowFrame=currentFrame+i;
       if(!this.active){
         if(!this.beginNext(nowFrame)){
-          if(this.started&&this.queue.length===0) {
+          if(this.started&&this.queue.length===0&&!underrunThisQuantum) {
+            underrunThisQuantum=true;
             this.underruns++;
-            if(this.underruns%32===1)this.port.postMessage({type:'underrun',count:this.underruns});
+            this.port.postMessage({type:'underrun',count:this.underruns});
           }
           this.pushTail(0,0); continue;
         }
