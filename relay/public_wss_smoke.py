@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import secrets
 import struct
 import time
 import urllib.error
@@ -74,8 +75,9 @@ def smoke_http_assets():
 async def main():
     instance, csp, asset_sizes, metrics_protected = smoke_http_assets()
     # Deliberately above JavaScript's Number.MAX_SAFE_INTEGER so the public
-    # control plane must preserve it as an exact decimal string.
-    epoch = 0x7F123456789ABCDE
+    # control plane must preserve it as an exact decimal string. A fresh epoch
+    # per run also avoids turning an intentional smoke retry into a replay.
+    epoch = (1 << 62) | secrets.randbits(62)
     async with websockets.connect(wsbase + "/v1/ws/host", open_timeout=15, ping_interval=None) as host:
         await host.send(json.dumps({
             "type":"hello_host","v":1,"room_id":room,"host_secret":host_secret,
@@ -85,6 +87,8 @@ async def main():
         host_ack = json.loads(await asyncio.wait_for(host.recv(), 10))
         if host_ack.get("server_instance_id") != instance:
             raise RuntimeError("host ack server_instance_id mismatch")
+        if host_ack.get("resume_after_sequence") not in (0, None):
+            raise RuntimeError(f"fresh smoke epoch unexpectedly resumed at sequence {host_ack.get('resume_after_sequence')}")
 
         async with websockets.connect(wsbase + "/v1/ws/guest/" + guest_token, open_timeout=15, ping_interval=None) as guest:
             state = json.loads(await asyncio.wait_for(guest.recv(), 10))
