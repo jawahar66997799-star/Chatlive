@@ -59,5 +59,8 @@ data class CaptureSnapshot(
 object CaptureStateStore {
     private val _state = MutableStateFlow(CaptureSnapshot())
     val state = _state.asStateFlow()
-    fun update(snapshot: CaptureSnapshot) { _state.value = snapshot }
+
+    fun update(snapshot: CaptureSnapshot) {
+        _state.value = snapshot
+    }
 }

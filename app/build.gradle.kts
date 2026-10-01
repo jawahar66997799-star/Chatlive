@@ -34,11 +34,6 @@ android {
         )
         buildConfigField(
             "String",
-            "DEFAULT_GUEST_TOKEN",
-            buildConfigString(providers.gradleProperty("JLS_GUEST_TOKEN").orElse("").get())
-        )
-        buildConfigField(
-            "String",
             "DEFAULT_GUEST_BASE_URL",
             buildConfigString(providers.gradleProperty("JLS_GUEST_BASE_URL").orElse("").get())
         )
