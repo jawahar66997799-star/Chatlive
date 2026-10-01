@@ -1,7 +1,7 @@
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 
 class PI {
-  constructor(){ this.deadbandMs=1; this.kp=18; this.ki=.35; this.maxPpm=300; this.i=0; this.ppm=0; }
+  constructor(){ this.deadbandMs=1; this.kp=18; this.ki=.35; this.maxPpm=350; this.i=0; this.ppm=0; }
   reset(){this.i=0;this.ppm=0;}
   update(errorMs,dt){
     const e=Math.abs(errorMs)<=this.deadbandMs?0:errorMs-Math.sign(errorMs)*this.deadbandMs;
@@ -17,9 +17,9 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     this.queue=[]; this.active=null; this.pos=0; this.started=false;
     this.sourceRate=48000; this.hardResyncMs=100; this.controller=new PI();
     this.underruns=0; this.lateFrames=0; this.hardResyncs=0; this.overruns=0;
-    this.lastMetricFrame=0; this.lastBoundaryFrame=0;
+    this.lastMetricFrame=0; this.lastBoundaryFrame=0; this.lastPiFrame=0;
     this.sab=null; this.sabCtrl=null; this.sabCapacity=0;
-    this.fadeFrames=Math.max(32,Math.round(sampleRate*.010));
+    this.fadeFrames=Math.max(32,Math.round(sampleRate*.005));
     this.tailL=new Float32Array(this.fadeFrames); this.tailR=new Float32Array(this.fadeFrames); this.tailWrite=0;
     this.crossfade=null;
     this.port.onmessage=e=>this.onMessage(e.data||{});
@@ -38,6 +38,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     }
     if(m.type==='reset'){
       this.queue=[];this.active=null;this.pos=0;this.started=false;this.controller.reset();this.crossfade=null;
+      this.lastBoundaryFrame=0;this.lastPiFrame=0;
       if(this.sabCtrl){Atomics.store(this.sabCtrl,0,0);Atomics.store(this.sabCtrl,1,0);}
       return;
     }
@@ -75,9 +76,9 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
   }
 
   captureTail(){
-    const n=this.fadeFrames, l0=new Float32Array(n),r0=new Float32Array(n);
+    const n=this.fadeFrames,l0=new Float32Array(n),r0=new Float32Array(n);
     for(let i=0;i<n;i++){
-      const idx=(this.tailWrite+i)%n; l0[i]=this.tailL[idx];r0[i]=this.tailR[idx];
+      const idx=(this.tailWrite+i)%n;l0[i]=this.tailL[idx];r0[i]=this.tailR[idx];
     }
     this.crossfade={l:l0,r:r0,pos:0};
   }
@@ -110,38 +111,53 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     }
     const dt=this.lastBoundaryFrame?Math.max(1/100,(nowFrame-this.lastBoundaryFrame)/sampleRate):.02;
     this.lastBoundaryFrame=nowFrame;
+    this.lastPiFrame=nowFrame;
     this.controller.update(errorMs,dt);
     return !!this.active;
   }
 
+  updatePhaseController(nowFrame){
+    if(!this.active)return;
+    const elapsedFrames=nowFrame-this.lastPiFrame;
+    if(elapsedFrames<128)return;
+    const dt=Math.max(1/100,elapsedFrames/sampleRate);
+    this.lastPiFrame=nowFrame;
+    // The source sample currently being rendered has its own ideal output frame.
+    // Positive error => we are late, so consume source slightly faster.
+    // Negative error => we are ahead, so consume source slightly slower.
+    const desiredOutputFrame=this.active.targetFrame+(this.pos*sampleRate/this.sourceRate);
+    const errorMs=(nowFrame-desiredOutputFrame)*1000/sampleRate;
+    if(Math.abs(errorMs)<this.hardResyncMs)this.controller.update(errorMs,dt);
+  }
+
   process(_inputs,outputs){
     const out=outputs[0],L=out[0],R=out[1]||out[0]; L.fill(0);R.fill(0);
-    let wroteAudio=false, underrunThisQuantum=false;
+    let wroteAudio=false;
     for(let i=0;i<L.length;i++){
       const nowFrame=currentFrame+i;
       if(!this.active){
         if(!this.beginNext(nowFrame)){
-          if(this.started&&this.queue.length===0&&!underrunThisQuantum) {
-            underrunThisQuantum=true;
+          if(this.started&&this.queue.length===0){
             this.underruns++;
-            this.port.postMessage({type:'underrun',count:this.underruns});
+            if(this.underruns%32===1)this.port.postMessage({type:'underrun',count:this.underruns});
           }
           this.pushTail(0,0); continue;
         }
       }
       if(!this.active){this.pushTail(0,0);continue;}
-      const p0=Math.floor(this.pos), frac=this.pos-p0, p1=Math.min(this.active.frames-1,p0+1);
+      this.updatePhaseController(nowFrame);
+      const p0=Math.floor(this.pos),frac=this.pos-p0,p1=Math.min(this.active.frames-1,p0+1);
       let l=this.sampleAt(this.active,p0,0)*(1-frac)+this.sampleAt(this.active,p1,0)*frac;
       let r=this.sampleAt(this.active,p0,1)*(1-frac)+this.sampleAt(this.active,p1,1)*frac;
       if(this.crossfade&&this.crossfade.pos<this.fadeFrames){
-        const x=this.crossfade.pos++, a=x/this.fadeFrames;
-        l=this.crossfade.l[x]*(1-a)+l*a; r=this.crossfade.r[x]*(1-a)+r*a;
+        const x=this.crossfade.pos++,a=x/this.fadeFrames;
+        l=this.crossfade.l[x]*(1-a)+l*a;r=this.crossfade.r[x]*(1-a)+r*a;
         if(this.crossfade.pos>=this.fadeFrames)this.crossfade=null;
       }
       L[i]=l;R[i]=r;wroteAudio=true;this.pushTail(l,r);
       const nominal=this.sourceRate/sampleRate;
       this.pos+=nominal*(1+this.controller.ppm/1e6);
-      if(this.pos>=this.active.frames){ this.finishActive(); }
+      if(this.pos>=this.active.frames)this.finishActive();
     }
     if(currentFrame-this.lastMetricFrame>=sampleRate/2){
       this.lastMetricFrame=currentFrame;
