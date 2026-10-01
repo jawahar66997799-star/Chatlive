@@ -5,10 +5,12 @@ on:
     branches: [youtube-live-sync]
     paths:
       - 'relay/web/**'
+      - 'web/**'
       - '.github/workflows/guest-sync-ci.yml'
   pull_request:
     paths:
       - 'relay/web/**'
+      - 'web/**'
       - '.github/workflows/guest-sync-ci.yml'
 
 jobs:
@@ -19,7 +21,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node relay/web/tests/sync-core.test.mjs
-      - run: node --check relay/web/decoder-worker.js
-      - run: node --check relay/web/worklet.js
-      - run: node --input-type=module --check < relay/web/player.js
+      - name: Guest runtime syntax
+        run: |
+          node --input-type=module --check < relay/web/player.js
+          node --check relay/web/decoder-worker.js
+          node --check relay/web/worklet.js
+          node --check relay/web/sync-core.mjs
+          node --check relay/web/vendor/libopus-wasm/index.js
+          node --check relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+      - name: Guest deterministic and vendor tests
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/protocol-vector.test.mjs
+          node relay/web/tests/assets.test.mjs
+          node relay/web/tests/vendor-opus.test.mjs
+      - name: Verify root web mirror
+        run: diff -qr relay/web web
