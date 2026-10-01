@@ -1,0 +1,50 @@
+name: JLS Workstream 4 Current Policy Controller
+
+on:
+  push:
+    branches:
+      - workstream-4-controller-current-4f4b
+  workflow_dispatch:
+
+jobs:
+  controller-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run current-policy controller matrix
+        run: |
+          python3 -m py_compile tools/benchmark/jls_workstream4_current_policy_sim.py
+          python3 tools/benchmark/jls_workstream4_current_policy_sim.py \
+            --listeners 20 \
+            --duration-s 240 \
+            --json-out /tmp/jls-current-policy.json \
+            --md-out /tmp/jls-current-policy.md
+          cat /tmp/jls-current-policy.md
+
+      - name: Assert current guest/relay delay policy
+        run: |
+          grep -q "suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000})" relay/web/player.js
+          grep -q "roomD=new SlewValue({initial:850,floor:400,ceiling:1000,upPerSec:.25,downPerSec:.15})" relay/web/player.js
+          grep -q 'roomDNeedsAuthoritativeSnap=true' relay/web/player.js
+          grep -q 'roomD.reset(ms,performance.now())' relay/web/player.js
+          grep -q 'JLS_COMMON_DELAY_MS", 400' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MIN_MS", 150' relay/main.go
+          grep -q 'JLS_COMMON_DELAY_MAX_MS", 1000' relay/main.go
+          grep -q 'JLS_DELAY_UP_US_PER_SEC", 250' relay/main.go
+          grep -q 'JLS_DELAY_DOWN_US_PER_SEC", 150' relay/main.go
+
+      - name: Current guest deterministic tests
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/pipeline-state.test.mjs
+          node relay/web/tests/assets.test.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-current-policy-controller
+          path: |
+            /tmp/jls-current-policy.json
+            /tmp/jls-current-policy.md
+          if-no-files-found: error
