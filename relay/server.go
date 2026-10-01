@@ -31,23 +31,45 @@ var wsUpgrader = websocket.Upgrader{
 	},
 }
 
-func clientIP(r *http.Request) string {
-	// Railway terminates TLS at a trusted reverse proxy and supplies X-Forwarded-For.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-			return last
+func normalizeIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip.String()
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			return ip.String()
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	return ""
+}
+
+func clientIP(r *http.Request, trustProxyHeaders bool) string {
+	if trustProxyHeaders {
+		// Railway public ingress overwrites X-Real-IP with the connecting client
+		// address. Trust forwarded identity only when explicitly enabled for a
+		// known reverse-proxy deployment.
+		if ip := normalizeIP(r.Header.Get("X-Real-IP")); ip != "" {
+			return ip
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if ip := normalizeIP(parts[0]); ip != "" {
+				return ip
+			}
+		}
+	}
+	if ip := normalizeIP(r.RemoteAddr); ip != "" {
+		return ip
 	}
 	return r.RemoteAddr
 }
 
 func (s *Server) acquireIP(w http.ResponseWriter, r *http.Request) (string, bool) {
-	ip := clientIP(r)
+	ip := clientIP(r, s.cfg.TrustProxyHeaders)
 	if !s.ip.acquire(ip) {
 		http.Error(w, "connection quota exceeded", http.StatusTooManyRequests)
 		return "", false
