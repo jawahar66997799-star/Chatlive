@@ -129,7 +129,13 @@ async function ensureAudio(){
 }
 
 function resetPlayout(reason){
-  timeline.reset();currentEpoch=null;roomTimeline=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;sabWriter?.reset();node?.port.postMessage({type:'reset'});decoder?.postMessage({type:'reset'});
+  timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;sabWriter?.reset();node?.port.postMessage({type:'reset'});
+  // Playout resets must never tear down the Opus decoder. In WebCodecs,
+  // AudioDecoder.reset() returns the decoder to an unconfigured state; doing
+  // that on the user's Listen gesture caused decoded audio to stop before any
+  // PCM reached the scheduler. Transport generation/epoch checks already
+  // discard stale decoded output safely.
+  if(reason==='server-restart'||reason==='reconnect'||reason==='host-offline')roomTimeline=null;
   if(reason==='epoch')note('Host started a fresh stream. Re-aligning…');
   else if(reason==='server-restart')note('Relay restarted. Rebuilding the clock and live timeline…');
   else note('Re-aligning to the live timeline…');
