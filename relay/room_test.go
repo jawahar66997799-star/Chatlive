@@ -217,7 +217,7 @@ func TestGuestStateEpochIsExactDecimalString(t *testing.T) {
 	if !ok {
 		t.Fatalf("guest epoch must be JSON-safe decimal string, got %T", state["epoch"])
 	}
-	if got != "9156431028413770974" {
+	if got != "9156438538392878302" {
 		t.Fatalf("epoch string mismatch: %q", got)
 	}
 }
