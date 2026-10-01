@@ -67,7 +67,7 @@ class RelayClient(
     private val droppedFrames = AtomicLong(0)
     private val lastSentSequence = AtomicLong(0)
     private val lastRttMs = AtomicLong(-1)
-    private val queue = ArrayBlockingQueue<QueuedFrame>(25)
+    private val queue = ArrayBlockingQueue<QueuedFrame>(60)
     private val pingSentNs = ConcurrentHashMap<String, Long>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "JlsRelayScheduler").apply { isDaemon = true }
@@ -79,10 +79,10 @@ class RelayClient(
     private var socket: WebSocket? = null
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(5, TimeUnit.SECONDS)
-        .pingInterval(15, TimeUnit.SECONDS)
+        .pingInterval(7, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
 
@@ -457,8 +457,8 @@ class RelayClient(
 
     companion object {
         private const val MAX_SOCKET_QUEUE_BYTES = 512L * 1024L
-        private const val STALE_FRAME_NS = 500_000_000L
-        private const val RECONNECT_LIVE_EDGE_NS = 250_000_000L
-        private const val RECONNECT_STALE_FRAME_NS = 250_000_000L
+        private const val STALE_FRAME_NS = 1_200_000_000L
+        private const val RECONNECT_LIVE_EDGE_NS = 1_000_000_000L
+        private const val RECONNECT_STALE_FRAME_NS = 1_000_000_000L
     }
 }
