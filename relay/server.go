@@ -104,6 +104,7 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 	ack := map[string]any{
 		"type":                  "hello_host_ack",
 		"v":                     protocolVersion,
+		"server_instance_id":    serverInstanceID,
 		"room_id":               hello.RoomID,
 		"epoch":                 hello.Epoch,
 		"resume_after_sequence": resumeAfter,
@@ -159,6 +160,7 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 				resp := map[string]any{
 					"type":         "clock_resp",
 					"v":            protocolVersion,
+					"server_instance_id": serverInstanceID,
 					"id":           m.ID,
 					"t0_guest_ns":  m.T0NS,
 					"t1_server_ns": t1,
@@ -269,7 +271,9 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 				return
 			}
 		case "listener_stats":
-			// Metrics reported by a guest are advisory and never alter the room timeline.
+			// Listener timing recommendations feed one bounded room-wide delay.
+			// No guest is allowed to privately redefine the shared timeline.
+			s.room.updateListenerStats(g.id, m, t1)
 		case "resume":
 			// Reconnect resume is negotiated in the URL before state/ring replay.
 			// A mid-connection resume would risk replaying behind already queued audio, so reject it.
@@ -302,6 +306,7 @@ func (s *Server) guestWriter(g *guestConn) {
 				err = g.conn.WriteMessage(websocket.TextMessage, encodeJSON(map[string]any{
 					"type":         "clock_resp",
 					"v":            protocolVersion,
+					"server_instance_id": serverInstanceID,
 					"id":           o.clockID,
 					"t0_guest_ns":  o.t0GuestNS,
 					"t1_server_ns": o.t1ServerNS,
