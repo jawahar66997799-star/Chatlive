@@ -59,6 +59,7 @@ class RelayClient(
     private val connecting = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
     private val authBlocked = AtomicBoolean(false)
+    private val everAuthenticated = AtomicBoolean(false)
     private val reconnectAttempts = AtomicInteger(0)
     private val reconnectCount = AtomicInteger(0)
     private val bytesUploaded = AtomicLong(0)
@@ -191,7 +192,7 @@ class RelayClient(
         }
         if (!connecting.compareAndSet(false, true)) return
 
-        val isReconnect = reconnectAttempts.get() > 0 || reconnectCount.get() > 0
+        val isReconnect = everAuthenticated.get() || reconnectAttempts.get() > 0
         listener.onRelayState(
             if (isReconnect) RelayState.RECONNECTING else RelayState.CONNECTING,
             if (isReconnect) "Reconnecting to relay." else "Connecting to relay."
@@ -246,8 +247,9 @@ class RelayClient(
                         }
                         connecting.set(false)
                         connected.set(true)
-                        val previousAttempts = reconnectAttempts.getAndSet(0)
-                        if (previousAttempts > 0) reconnectCount.incrementAndGet()
+                        reconnectAttempts.set(0)
+                        val wasReconnect = everAuthenticated.getAndSet(true)
+                        if (wasReconnect) reconnectCount.incrementAndGet()
                         val resumeAfter = obj.optLong("resume_after_sequence", 0L)
                         while (true) {
                             val head = queue.peek() ?: break
@@ -255,10 +257,11 @@ class RelayClient(
                             queue.poll()
                             droppedFrames.incrementAndGet()
                         }
+                        discardStale(RECONNECT_STALE_FRAME_NS)
                         listener.onRelayState(
                             RelayState.CONNECTED,
-                            if (reconnectCount.get() > 0) {
-                                "Relay authenticated and reconnected at server sequence $resumeAfter; stale audio is discarded."
+                            if (wasReconnect) {
+                                "Relay authenticated and reconnected at server sequence $resumeAfter; stale audio was discarded."
                             } else {
                                 "Relay authenticated. Server resume sequence: $resumeAfter."
                             }
@@ -275,19 +278,28 @@ class RelayClient(
                         }
                     }
                     "error", "auth_error", "auth-error" -> {
-                        val code = obj.optString("code")
+                        val code = obj.optString("code").lowercase()
                         val retryable = obj.optBoolean("retryable", false)
                         val message = obj.optString("message", "Relay rejected the host connection.")
-                        if (!retryable || code.contains("auth", ignoreCase = true) ||
-                            code.contains("secret", ignoreCase = true)
-                        ) {
-                            authBlocked.set(true)
-                            connected.set(false)
-                            connecting.set(false)
-                            listener.onRelayState(RelayState.AUTH_FAILED, message)
-                            webSocket.close(1008, "auth-failed")
-                        } else {
-                            listener.onRelayState(RelayState.ERROR, message)
+                        when {
+                            code == "unauthorized" ||
+                                code == "auth_failed" ||
+                                code.contains("secret") -> {
+                                authBlocked.set(true)
+                                connected.set(false)
+                                connecting.set(false)
+                                listener.onRelayState(RelayState.AUTH_FAILED, message)
+                                webSocket.close(1008, "unauthorized")
+                            }
+                            code == "bad_hello" -> {
+                                authBlocked.set(true)
+                                connected.set(false)
+                                connecting.set(false)
+                                listener.onRelayState(RelayState.ERROR, message)
+                                webSocket.close(1002, "bad-hello")
+                            }
+                            retryable -> listener.onRelayState(RelayState.RECONNECTING, message)
+                            else -> listener.onRelayState(RelayState.ERROR, "$code: $message")
                         }
                     }
                 }
@@ -296,15 +308,18 @@ class RelayClient(
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            if (code == 1008 || code == 4001 || code == 4401 || code == 4403) {
+            val authReason = reason.contains("unauthorized", true) ||
+                reason.contains("auth", true) ||
+                reason.contains("secret", true)
+            if (authReason) {
                 authBlocked.set(true)
-                listener.onRelayState(RelayState.AUTH_FAILED, "Relay authentication failed (code $code).")
+                listener.onRelayState(RelayState.AUTH_FAILED, "Relay authentication failed: $reason")
             }
             webSocket.close(code, reason)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            handleDisconnect("Relay closed: $code $reason")
+            handleDisconnect(webSocket, "Relay closed: $code $reason")
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -316,12 +331,14 @@ class RelayClient(
                 return
             }
             handleDisconnect(
+                webSocket,
                 "Relay connection failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")
             )
         }
     }
 
-    private fun handleDisconnect(detail: String) {
+    private fun handleDisconnect(webSocket: WebSocket, detail: String) {
+        if (socket !== webSocket) return
         socket = null
         connected.set(false)
         connecting.set(false)
@@ -392,6 +409,16 @@ class RelayClient(
         }
     }
 
+    private fun discardStale(maxAgeNs: Long) {
+        val now = SystemClock.elapsedRealtimeNanos()
+        while (true) {
+            val head = queue.peek() ?: break
+            if (now - head.captureMonoNs <= maxAgeNs) break
+            queue.poll()
+            droppedFrames.incrementAndGet()
+        }
+    }
+
     private fun pingTick() {
         if (!running.get() || !connected.get()) return
         val ws = socket ?: return
@@ -434,5 +461,6 @@ class RelayClient(
     companion object {
         private const val MAX_SOCKET_QUEUE_BYTES = 512L * 1024L
         private const val STALE_FRAME_NS = 500_000_000L
+        private const val RECONNECT_STALE_FRAME_NS = 250_000_000L
     }
 }
