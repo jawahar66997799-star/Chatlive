@@ -1,0 +1,56 @@
+name: Vendor pinned Opus WASM
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - '.github/workflows/vendor-opus-wasm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: youtube-live-sync
+          fetch-depth: 0
+
+      - name: Download exact libopus-wasm 0.4.1 browser bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
+          URL="https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js"
+          curl --fail --location --retry 4 --retry-all-errors "$URL" -o relay/web/vendor/libopus-wasm/index.js
+          size=$(wc -c < relay/web/vendor/libopus-wasm/index.js)
+          test "$size" -gt 10000
+          if head -c 256 relay/web/vendor/libopus-wasm/index.js | grep -qi '<html'; then
+            echo "Downloaded HTML instead of JavaScript" >&2
+            exit 1
+          fi
+          cp relay/web/vendor/libopus-wasm/index.js web/vendor/libopus-wasm/index.js
+          sha256sum relay/web/vendor/libopus-wasm/index.js | awk '{print $1}' > relay/web/vendor/libopus-wasm/SHA256.txt
+          cp relay/web/vendor/libopus-wasm/SHA256.txt web/vendor/libopus-wasm/SHA256.txt
+          curl --fail --location --retry 2 "https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/LICENSE" -o relay/web/vendor/libopus-wasm/LICENSE.txt || true
+          if [ -s relay/web/vendor/libopus-wasm/LICENSE.txt ]; then
+            cp relay/web/vendor/libopus-wasm/LICENSE.txt web/vendor/libopus-wasm/LICENSE.txt
+          fi
+
+      - name: Commit vendored decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
+          if git diff --cached --quiet; then
+            echo "Vendored decoder already matches pinned bundle"
+            exit 0
+          fi
+          git commit -m "guest: vendor pinned libopus-wasm 0.4.1"
+          git push origin HEAD:youtube-live-sync
