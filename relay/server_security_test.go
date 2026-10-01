@@ -1,7 +1,9 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -27,5 +29,32 @@ func TestClientIPIgnoresGenericForwardedChain(t *testing.T) {
 
 	if got := clientIP(req, true); got != "10.0.0.9" {
 		t.Fatalf("generic forwarded chain should not affect client IP: %q", got)
+	}
+}
+
+
+func TestMetricsBearerProtection(t *testing.T) {
+	cfg := testConfig()
+	cfg.MetricsToken = strings.Repeat("m", 32)
+	metrics := &Metrics{}
+	s := &Server{cfg: cfg, metrics: metrics, ip: newIPLimiter(cfg.MaxIPConns)}
+	s.room = newRoom(cfg, metrics)
+
+	unauthReq := httptest.NewRequest("GET", "http://example.test/metrics", nil)
+	unauthRec := httptest.NewRecorder()
+	s.metricsHandler(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated metrics status=%d want=%d", unauthRec.Code, http.StatusUnauthorized)
+	}
+
+	authReq := httptest.NewRequest("GET", "http://example.test/metrics", nil)
+	authReq.Header.Set("Authorization", "Bearer "+cfg.MetricsToken)
+	authRec := httptest.NewRecorder()
+	s.metricsHandler(authRec, authReq)
+	if authRec.Code != http.StatusOK {
+		t.Fatalf("authenticated metrics status=%d want=%d", authRec.Code, http.StatusOK)
+	}
+	if !strings.Contains(authRec.Body.String(), "jls_common_delay_ms") {
+		t.Fatalf("authenticated metrics missing common delay gauge")
 	}
 }
