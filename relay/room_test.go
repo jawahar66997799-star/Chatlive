@@ -197,3 +197,27 @@ func TestAdaptiveCommonDelayProductionSubMillisecondSlew(t *testing.T) {
 		t.Fatalf("production down-slew mismatch: got %.6f ms want 400.100 ms", got)
 	}
 }
+
+
+func TestGuestStateEpochIsExactDecimalString(t *testing.T) {
+	r := newRoom(testConfig(), &Metrics{})
+	const epoch = uint64(0x7f123456789abcde)
+	h := HostHello{
+		Type: "hello_host", V: protocolVersion, RoomID: r.id, HostSecret: r.hostSecret,
+		Epoch: epoch, Codec: "opus", SampleRate: 48000, Channels: 2, Layer: 0, FrameSamples: 960,
+	}
+	if _, _, _, err := r.beginHost(h); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	state, _ := r.stateLocked(1_000_000_000, 0, 0, false)
+	r.mu.Unlock()
+
+	got, ok := state["epoch"].(string)
+	if !ok {
+		t.Fatalf("guest epoch must be JSON-safe decimal string, got %T", state["epoch"])
+	}
+	if got != "9156431028413770974" {
+		t.Fatalf("epoch string mismatch: %q", got)
+	}
+}
