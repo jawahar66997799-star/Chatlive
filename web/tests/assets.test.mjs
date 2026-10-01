@@ -78,3 +78,10 @@ assert.match(worklet,/outputPeakDb/);
 
 assert.match(worker,/decodedRmsDb/);
 assert.match(worker,/decodedPeakDb/);
+
+assert.match(player,/function scheduleSafeLocal/);
+assert.match(player,/function shouldForceSafeLocal/);
+assert.match(player,/clock not ready/);
+assert.match(player,/no precision frames scheduled/);
+assert.match(player,/Playout gate:/);
+assert.doesNotMatch(player,/silentOutputForMs>1200\s*&&\s*metrics\.scheduledFrames>=20/);
