@@ -43,8 +43,8 @@ jobs:
           if(p.license!=='MIT') throw new Error('unexpected package license');
           NODE
 
-          registry_json=$(npm view libopus-wasm@0.4.1 dist.integrity dist.shasum dist.tarball --json)
-          printf '%s\n' "$registry_json" > /tmp/jls-opus/registry.json
+          npm view libopus-wasm@0.4.1 --json > /tmp/jls-opus/registry.json
+          sha256sum "/tmp/jls-opus/$tgz" | awk '{print $1}' > /tmp/jls-opus/tarball.sha256
 
           cd "$GITHUB_WORKSPACE"
           rm -rf relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
@@ -95,15 +95,20 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const pkg=JSON.parse(fs.readFileSync('/tmp/jls-opus/package/package.json','utf8'));
-          const dist=JSON.parse(fs.readFileSync('/tmp/jls-opus/registry.json','utf8'));
+          const registry=JSON.parse(fs.readFileSync('/tmp/jls-opus/registry.json','utf8'));
+          const tarballSha256=fs.readFileSync('/tmp/jls-opus/tarball.sha256','utf8').trim();
+          const dist=registry.dist||{};
+          if(!dist.integrity||!dist.shasum||!dist.tarball) throw new Error('npm registry dist metadata incomplete');
+          if(!/^[0-9a-f]{64}$/.test(tarballSha256)) throw new Error('invalid tarball SHA-256');
           const metadata={
             name:pkg.name,
             version:pkg.version,
             license:pkg.license,
             repository:pkg.repository,
             npmDistIntegrity:dist.integrity,
-            npmDistShasum:dist.shasum,
+            npmDistShasumSha1:dist.shasum,
             npmTarball:dist.tarball,
+            npmTarballSha256:tarballSha256,
             browserRuntimeFiles:[
               'index.js',
               'generated/libopus.generated.mjs'
