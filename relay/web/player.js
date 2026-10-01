@@ -12,7 +12,7 @@ const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let lastRelayMessageAt=0,lastBinaryAt=0,transportWatchdogTimer=null;
-let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
+let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null,wakeLock=null;
 let audioEngineRebuilds=0,audioEngineRebuilding=false;
 let directGain=null,directNextTime=null,directSources=new Set();
 let roomDNeedsAuthoritativeSnap=true;
@@ -527,8 +527,16 @@ function onWorklet(m){
   else if(m.type==='overrun')metrics.overruns=m.count;
 }
 
+async function holdWakeLock(){
+  try{
+    if(!('wakeLock' in navigator)||document.visibilityState!=='visible')return;
+    if(wakeLock&&!wakeLock.released)return;
+    wakeLock=await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release',()=>{wakeLock=null});
+  }catch{}
+}
 async function unlock(){
-  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;ui.join.disabled=true;ui.join.textContent='LISTENING';resetPlayout('join');setState(hostOnline?'Buffering…':'Host offline',hostOnline?'warn':'bad');note('Live audio only. No YouTube or song download is needed on this device.')}
+  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='LISTENING';resetPlayout('join');setState(hostOnline?'Buffering…':'Host offline',hostOnline?'warn':'bad');note('Live audio only. No YouTube or song download is needed on this device.')}
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
 ui.join.addEventListener('click',unlock);
@@ -550,7 +558,7 @@ function resumeVisible(){
   })
   .catch(()=>{ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Tap to resume','warn')});
 }
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeVisible();else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
 window.addEventListener('online',()=>connect(true));window.addEventListener('offline',()=>{metrics.transportGap=true;setState('Network offline','bad')});
@@ -597,6 +605,7 @@ function render(){
     'outputLatency: '+fmt(metrics.outputLatencyMs)+' ms · baseLatency: '+fmt(metrics.baseLatencyMs)+' ms',
     'Reconnects: '+metrics.reconnects+' · watchdog: '+metrics.transportWatchdogReconnects+' · stale drops: '+metrics.staleDrops,
     'Transport age: relay '+fmt(metrics.lastRelayAgeMs)+' ms · audio '+fmt(metrics.lastBinaryAgeMs)+' ms',
+    'Wake lock: '+(wakeLock&&!wakeLock.released?'held':'not held'),
     'SAB: '+(sabWriter?'yes':'no')+' · isolated: '+(metrics.crossOriginIsolated?'yes':'no'),
     'Audio: '+metrics.audioState+' · epoch: '+(metrics.epoch??'—')+' · seq: '+(metrics.seq??'—'),
     'Relay instance: '+(metrics.serverInstanceId?metrics.serverInstanceId.slice(0,8)+'…':'—')+' · restarts: '+metrics.serverRestarts,
