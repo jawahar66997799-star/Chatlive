@@ -200,7 +200,7 @@ jobs:
       - name: Go call-reachability vulnerability check
         shell: bash
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           cd relay
           "$(go env GOPATH)/bin/govulncheck" ./...
 
