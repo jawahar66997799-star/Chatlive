@@ -137,18 +137,6 @@ func envBool(k string, d bool) bool {
 	}
 }
 
-func envBool(k string, d bool) bool {
-	v := strings.TrimSpace(os.Getenv(k))
-	if v == "" {
-		return d
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		return d
-	}
-	return b
-}
-
 type Metrics struct {
 	hostConnections   atomic.Uint64
 	guestJoins        atomic.Uint64
