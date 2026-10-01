@@ -110,7 +110,8 @@ assert.doesNotMatch(player,/setState\(\s*['"]Listening\b/,
 assert.doesNotMatch(player,/textContent=['"]LISTENING['"]/,
   'join button must not claim listening before output evidence');
 assert.match(player,/metrics\.pipelineState=p\.code/);
-assert.match(player,/continuity\.code==='LIVE'/);
+assert.match(player,/ui\.state\.textContent=p\.label/);
+assert.match(player,/metrics\.continuityState=continuity\.code/);
 assert.match(core,/return stateResult\(S\.PLAYING,S\.PLAYING/);
 assert.match(player,/outputAudible:\(lastAudibleOutputAt/);
 assert.match(player,/metrics\.outputPeakDb>-90\|\|metrics\.outputRmsDb>-90/);
