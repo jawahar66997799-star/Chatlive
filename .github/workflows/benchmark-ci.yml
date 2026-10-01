@@ -58,6 +58,11 @@ jobs:
           bash -n tools/benchmark/jls_failure_harness.sh
           bash -n tools/benchmark/jls_generate_e2e_video.sh
 
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
       - name: Build short reference video
         run: |
           bash tools/benchmark/jls_generate_e2e_video.sh 3 /tmp/jls-e2e.mov
