@@ -375,6 +375,7 @@ class RelayClient(
     private fun handleDisconnect(webSocket: WebSocket, detail: String) {
         if (socket !== webSocket) return
         socket = null
+        pingSentNs.clear()
         connected.set(false)
         connecting.set(false)
         if (!running.get()) return
@@ -492,6 +493,7 @@ class RelayClient(
         connected.set(false)
         connecting.set(false)
         old?.cancel()
+        pingSentNs.clear()
         trimToLiveEdge()
         listener.onRelayState(RelayState.RECONNECTING, detail)
         emitMetrics()
