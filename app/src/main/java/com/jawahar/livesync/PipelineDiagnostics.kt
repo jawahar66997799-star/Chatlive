@@ -143,7 +143,7 @@ object PipelineDiagnosticEvaluator {
         val detail = when (broken) {
             PipelineStage.CAPTURE -> when (input.captureHealth) {
                 CaptureHealth.CAPTURE_BLOCKED_SUSPECTED ->
-                    "CAPTURE failure: target YouTube playback is active but permitted playback-capture PCM is silent; source capture policy is suspected."
+                    "CAPTURE failure: system media playback appears active but permitted YouTube/YT Music capture PCM is silent; target capture policy or source-side silence is suspected."
                 CaptureHealth.CAPTURE_STALLED ->
                     "CAPTURE failure: AudioRecord is not delivering PCM and recorder recovery is active."
                 CaptureHealth.PROJECTION_STOPPED ->
