@@ -239,7 +239,7 @@ class RelayClient(
             try {
                 val obj = JSONObject(text)
                 when (obj.optString("type")) {
-                    "welcome_host" -> {
+                    "hello_host_ack" -> {
                         if (obj.optInt("v", -1) != JlsProtocol.VERSION) {
                             webSocket.close(1002, "protocol-version-mismatch")
                             return
@@ -248,7 +248,7 @@ class RelayClient(
                         connected.set(true)
                         val previousAttempts = reconnectAttempts.getAndSet(0)
                         if (previousAttempts > 0) reconnectCount.incrementAndGet()
-                        val resumeAfter = obj.optLong("resume_after_seq", 0L)
+                        val resumeAfter = obj.optLong("resume_after_sequence", 0L)
                         while (true) {
                             val head = queue.peek() ?: break
                             if (head.sequence > resumeAfter) break
