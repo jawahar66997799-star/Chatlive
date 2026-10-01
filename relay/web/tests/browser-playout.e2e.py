@@ -131,24 +131,36 @@ async def main():
                 "() => window.__JLS_METRICS__ && window.__JLS_METRICS__.decodedRmsDb > -60",
                 timeout=10000,
             )
+            first_output_at = time.monotonic()
             await page.wait_for_function(
                 "() => { const m=window.__JLS_METRICS__; return m && m.audioState==='running' && m.workletAlive && m.workletQuanta>5 && m.scheduledFrames>3 && m.outputRmsDb>-80; }",
                 timeout=12000,
+            )
+            audible_at = time.monotonic()
+
+            # Continuity may bootstrap in SAFE LOCAL, but the shared room clock
+            # must take over automatically once timing is trustworthy.
+            await page.wait_for_function(
+                "() => { const m=window.__JLS_METRICS__; return m && m.scheduledFrames>20 && m.workletAlive && m.outputRmsDb>-80 && !m.fallbackPlayback && m.playoutGate==='precision scheduled'; }",
+                timeout=10000,
             )
             metrics = await page.evaluate("() => ({...window.__JLS_METRICS__})")
             diag = await page.locator("#diagText").inner_text()
             await sender
 
-            assert metrics["scheduledFrames"] > 3, metrics
+            assert metrics["scheduledFrames"] > 20, metrics
             assert metrics["workletAlive"] is True, metrics
             assert metrics["workletQuanta"] > 5, metrics
             assert metrics["outputRmsDb"] > -80, metrics
+            assert metrics["fallbackPlayback"] is False, metrics
+            assert metrics["playoutGate"] == "precision scheduled", metrics
             assert metrics["schedulerErrors"] == 0, metrics
             assert metrics["workletProcessorErrors"] == 0, metrics
             assert not page_errors, page_errors
             print("BROWSER_PLAYOUT_E2E PASS")
             print(json.dumps({
                 "audioState": metrics["audioState"],
+                "audibleWaitMs": round((audible_at - first_output_at) * 1000, 1),
                 "decodedRmsDb": metrics["decodedRmsDb"],
                 "outputRmsDb": metrics["outputRmsDb"],
                 "scheduledFrames": metrics["scheduledFrames"],
