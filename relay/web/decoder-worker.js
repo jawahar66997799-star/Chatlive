@@ -21,16 +21,14 @@ async function initDecoder(next) {
     } catch(e){ postError(`WebCodecs probe failed; falling back to WASM: ${e?.message||e}`); }
   }
   let lastWasmError=null;
-  const candidates=[config.wasmUrl,'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'].filter(Boolean);
-  for(const url of candidates){
-    try {
-      const mod=await import(url);
-      if(typeof mod.createDecoder!=='function')throw new Error('createDecoder export missing');
-      wasmDecoder=await mod.createDecoder({sampleRate:config.sampleRate,channels:config.channels});
-      decoderMode=url===config.wasmUrl?'wasm-opus-local':'wasm-opus-cdn'; self.postMessage({type:'decoder-ready',mode:decoderMode}); return;
-    }catch(e){lastWasmError=e;}
-  }
-  decoderMode='opus-unavailable'; postError(`No Opus decoder available: ${lastWasmError?.message||lastWasmError}`,true);
+  const url='/vendor/libopus-wasm/index.js';
+  try {
+    const mod=await import(url);
+    if(typeof mod.createDecoder!=='function')throw new Error('createDecoder export missing');
+    wasmDecoder=await mod.createDecoder({sampleRate:config.sampleRate,channels:config.channels});
+    decoderMode='wasm-opus-local'; self.postMessage({type:'decoder-ready',mode:decoderMode}); return;
+  }catch(e){lastWasmError=e;}
+  decoderMode='opus-unavailable'; postError(`No same-origin Opus decoder available: ${lastWasmError?.message||lastWasmError}`,true);
 }
 function parseWireFrame(buffer,generation,arrivalPerfMs){
   const dv=new DataView(buffer);
