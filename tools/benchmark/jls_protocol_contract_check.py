@@ -31,13 +31,13 @@ def main() -> int:
         all(x in android_proto for x in ["'J'","'L'","'S'","'1'"]) and '"JLS1"' in relay_proto and "magic!=='JLS1'" in guest_worker,
         "Android, relay, and guest all use JLS1.")
     add(checks, "protocol_version",
-        re.search(r"const val VERSION\s*=\s*1\b", android_proto) is not None and
-        re.search(r"protocolVersion\s*=\s*1\b", relay_proto) is not None and
+        "const val VERSION = 1" in android_proto and
+        "protocolVersion = 1" in relay_proto and
         "version!==1" in guest_worker,
         "All endpoints use protocol v1.")
     add(checks, "audio_header_64",
-        re.search(r"HEADER_BYTES\s*=\s*64\b", android_proto) is not None and
-        re.search(r"audioHeaderLen\s*=\s*64\b", relay_proto) is not None and
+        "const val HEADER_BYTES = 64" in android_proto and
+        ("audioHeaderLen  = 64" in relay_proto or "audioHeaderLen = 64" in relay_proto) and
         "dv.byteLength<64" in guest_worker and "headerBytes!==64" in guest_worker,
         "All endpoints use a 64-byte audio header.")
     add(checks, "opus_codec_id",
