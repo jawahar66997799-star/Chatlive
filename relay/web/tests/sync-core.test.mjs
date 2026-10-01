@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {ClockModel,AdaptiveDelay,SlewValue,PIController,TimelineTracker,OutputTimeMapper,makeNtpSample,classifyPhaseError,fallbackContextTimeForPerformance,ReconnectBackoff,bufferErrorMs} from '../sync-core.mjs';
+import {ClockModel,AdaptiveDelay,SlewValue,PIController,TimelineTracker,OutputTimeMapper,ServerInstanceTracker,makeNtpSample,classifyPhaseError,fallbackContextTimeForPerformance,ReconnectBackoff,bufferErrorMs} from '../sync-core.mjs';
 function near(a,b,e,msg=''){assert.ok(Math.abs(a-b)<=e,msg+' got='+a+' want='+b+' ±'+e)}
 {const s=makeNtpSample({t0Ms:1000,t3Ms:1040,serverRecvNs:2010000000,serverSendNs:2014000000});near(s.rttMs,36,.001,'NTP RTT');near(s.offsetMs,992,.001,'NTP offset')}
 {const c=new ClockModel({minWindowMs:1000}),offset=5000,skew=80e-6;for(let i=0;i<30;i++){const t0=i*300,out=6+(i%3),back=7+((i*2)%4),work=1,s1=(offset+(1+skew)*(t0+out))*1e6,s2=s1+work*1e6,t3=t0+out+work+back;c.addExchange({t0Ms:t0,t3Ms:t3,serverRecvNs:s1,serverSendNs:s2})}const m=c.snapshot();assert.ok(m.accepted>=8);near(m.driftPpm,80,12,'clock drift');near(c.serverAtLocal(9000),offset+(1+skew)*9000,3,'mapping')}
@@ -12,4 +12,5 @@ function near(a,b,e,msg=''){assert.ok(Math.abs(a-b)<=e,msg+' got='+a+' want='+b+
 {const m=new OutputTimeMapper();for(let i=0;i<10;i++)m.add({performanceTimeMs:1000+i*100,contextTimeSec:(200+i*100)/1000});near(m.contextTimeForPerformance(2500),1.7,.001,'output map');near(fallbackContextTimeForPerformance(2,1000,1500,.05),2.45,.001,'fallback')}
 {const b=new ReconnectBackoff();assert.deepEqual([b.next(),b.next(),b.next()],[250,425,723]);b.reset();assert.equal(b.next(),250)}
 {const c=new ClockModel();c.addExchange({t0Ms:0,t3Ms:20,serverRecvNs:1010e6,serverSendNs:1010e6});assert.equal(c.ready,true);c.reset();assert.equal(c.ready,false);assert.equal(c.snapshot(),null)}
+{const s=new ServerInstanceTracker();assert.equal(s.observe('alpha').initial,true);assert.equal(s.observe('alpha').changed,false);const changed=s.observe('beta');assert.equal(changed.changed,true);assert.equal(changed.previous,'alpha');assert.equal(s.changes,1)}
 console.log('JLS sync deterministic tests: PASS');
