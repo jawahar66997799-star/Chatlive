@@ -1,0 +1,25 @@
+{
+  "format": "JLS1-golden-v1",
+  "description": "Canonical JLS1 v1 64-byte audio header followed by Opus payload. All multi-byte integers are big-endian.",
+  "vectors": [
+    {
+      "name": "audio-opus-20ms-discontinuity",
+      "protocol_version": 1,
+      "message_type": 1,
+      "flags": 1,
+      "header_bytes": 64,
+      "epoch_u64": "72623859790382856",
+      "sequence_u64": "1230066625199609624",
+      "capture_mono_ns_u64": "2387509390608836392",
+      "sample_position_u64": "960",
+      "relay_ingress_ns_u64": "0",
+      "sample_rate_u32": 48000,
+      "frame_samples_u16": 960,
+      "channels_u8": 2,
+      "codec_u8": 1,
+      "layer_u8": 0,
+      "payload_hex": "deadbeef",
+      "packet_hex": "4a4c53310101014001020304050607081112131415161718212223242526272800000000000003c000000000000000000000bb8003c002010000000400000000deadbeef"
+    }
+  ]
+}
