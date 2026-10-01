@@ -10,7 +10,8 @@ const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
 const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
 const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
-let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
+let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map();
+let lastRelayMessageAt=0,lastBinaryAt=0,transportWatchdogTimer=null;
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
 let audioEngineRebuilds=0,audioEngineRebuilding=false;
 let directGain=null,directNextTime=null,directSources=new Set();
@@ -18,7 +19,7 @@ let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -203,12 +204,32 @@ function connect(force=false){
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;backoff=250;ui.join.disabled=false;setState(hostOnline?'Host online':'Connected','ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,2000)};
-  ws.onmessage=e=>{if(gen!==generation)return;if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
-  ws.onclose=()=>{if(gen!==generation)return;clearInterval(clockTimer);clockTimer=null;if(joined)resetPlayout('reconnect');setState(navigator.onLine===false?'Network offline':'Reconnecting…','bad');scheduleReconnect()};
+  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline?'Host online':'Connected','ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1500);startTransportWatchdog()};
+  ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
+  ws.onclose=()=>{if(gen!==generation)return;clearInterval(clockTimer);clockTimer=null;stopTransportWatchdog();if(joined)resetPlayout('reconnect');setState(navigator.onLine===false?'Network offline':'Reconnecting…','bad');scheduleReconnect()};
   ws.onerror=()=>{};
 }
-function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(5000,Math.round(backoff*1.7));reconnectTimer=setTimeout(connect,d)}
+function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(2000,Math.max(100,Math.round(backoff*1.55)));reconnectTimer=setTimeout(()=>connect(),d)}
+function stopTransportWatchdog(){clearInterval(transportWatchdogTimer);transportWatchdogTimer=null}
+function startTransportWatchdog(){
+  stopTransportWatchdog();
+  transportWatchdogTimer=setInterval(()=>{
+    if(!ws||ws.readyState!==WebSocket.OPEN)return;
+    const now=performance.now();
+    const relayAge=lastRelayMessageAt?now-lastRelayMessageAt:Infinity;
+    const binaryAge=lastBinaryAt?now-lastBinaryAt:null;
+    metrics.lastRelayAgeMs=Number.isFinite(relayAge)?relayAge:null;
+    metrics.lastBinaryAgeMs=Number.isFinite(binaryAge)?binaryAge:null;
+    // Clock replies arrive every ~1.5 s even during silence. If the socket goes
+    // half-open across Wi-Fi/cellular handover, replace it proactively instead
+    // of waiting for the browser/TCP timeout.
+    if(relayAge>5500){
+      metrics.transportWatchdogReconnects++;metrics.selfHeals++;
+      note('Transport stalled; reconnecting automatically at the live edge.');
+      connect(true);
+    }
+  },1000);
+}
 function clockBurst(){for(let i=0;i<12;i++)setTimeout(sendClock,i*120)}
 function sendClock(){
   if(!ws||ws.readyState!==WebSocket.OPEN)return;
@@ -338,40 +359,18 @@ function scheduleSafeLocal(m,reason='watchdog'){
   if(!joined||!audio||audio.state!=='running')return false;
   enterSafeLocal(reason);
 
-  const workletDead=metrics.workletProcessorErrors>0||(!metrics.workletAlive&&decodedAudibleSince!=null&&performance.now()-decodedAudibleSince>650);
-  if(workletDead){
-    const ok=scheduleDirectBuffer(m,reason);
-    if(ok){metrics.scheduledFrames++;lastEpoch=String(m.epoch);lastSeq=String(m.seq)}
-    return ok;
+  // SAFE LOCAL must be an independent continuity path. Do not send fallback
+  // audio through the same AudioWorklet/SAB scheduler that may be the fault.
+  // BufferSource playback is less precise, but it keeps sound continuous while
+  // precision synchronization recovers in parallel.
+  const ok=scheduleDirectBuffer(m,reason);
+  if(ok){
+    metrics.scheduledFrames++;
+    lastEpoch=String(m.epoch);lastSeq=String(m.seq);
+    metrics.playoutGate='SAFE LOCAL direct playback';
+    if(hostOnline)setState('Listening · continuity mode','ok');
   }
-  if(!node)return false;
-  const leadFrames=Math.round(audio.sampleRate*.10);
-  const nowFrame=Math.round(audio.currentTime*audio.sampleRate);
-  if(!Number.isFinite(fallbackNextTargetFrame)||fallbackNextTargetFrame<nowFrame+Math.round(audio.sampleRate*.03)){
-    fallbackNextTargetFrame=nowFrame+leadFrames;
-  }
-  const sourceRate=Number(m.sampleRate)||sampleRate||48000;
-  const startSample=Number.isFinite(m.samplePosition)?m.samplePosition:0;
-  const meta={targetFrame:fallbackNextTargetFrame,startSample,frames:m.frames};
-  fallbackNextTargetFrame+=Math.round(m.frames*audio.sampleRate/sourceRate);
-  try{
-    if(sabWriter){
-      if(!sabWriter.write(m.pcm,meta)){sabWriter.reset();node.port.postMessage({type:'reset'});if(!sabWriter.write(m.pcm,meta))throw new Error('SAB safe-local queue full')}
-    }else{
-      node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
-    }
-  }catch(err){
-    metrics.schedulerErrors++;metrics.lastSchedulerError='safe-local: '+String(err?.message||err);
-    metrics.playoutGate='safe-local handoff failed';
-    note('SAFE_LOCAL_HANDOFF_ERROR: '+metrics.lastSchedulerError.slice(0,240));
-    void rebuildAudioEngine('safe-local handoff failed');
-    return false;
-  }
-  metrics.scheduledFrames++;
-  metrics.playoutGate='SAFE LOCAL playing';
-  lastEpoch=String(m.epoch);lastSeq=String(m.seq);
-  if(hostOnline)setState('Listening · safe mode','ok');
-  return true;
+  return ok;
 }
 
 function shouldForceSafeLocal(now=performance.now()){
@@ -566,7 +565,8 @@ function render(){
     'Resampler: '+fmt(metrics.resamplerPpm)+' ppm',
     'Hard resyncs: '+metrics.hardResyncs+' · overruns: '+metrics.overruns,
     'outputLatency: '+fmt(metrics.outputLatencyMs)+' ms · baseLatency: '+fmt(metrics.baseLatencyMs)+' ms',
-    'Reconnects: '+metrics.reconnects+' · stale drops: '+metrics.staleDrops,
+    'Reconnects: '+metrics.reconnects+' · watchdog: '+metrics.transportWatchdogReconnects+' · stale drops: '+metrics.staleDrops,
+    'Transport age: relay '+fmt(metrics.lastRelayAgeMs)+' ms · audio '+fmt(metrics.lastBinaryAgeMs)+' ms',
     'SAB: '+(sabWriter?'yes':'no')+' · isolated: '+(metrics.crossOriginIsolated?'yes':'no'),
     'Audio: '+metrics.audioState+' · epoch: '+(metrics.epoch??'—')+' · seq: '+(metrics.seq??'—'),
     'Relay instance: '+(metrics.serverInstanceId?metrics.serverInstanceId.slice(0,8)+'…':'—')+' · restarts: '+metrics.serverRestarts,
