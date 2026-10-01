@@ -122,7 +122,19 @@ self.onmessage=async e=>{
     if(m.type==='init')return await queueDecoderInit(m);
     if(m.type==='reset'){
       await decoderInitPromise.catch(()=>{});
-      pendingMeta.clear();nextWebTimestampUs=1;webDecoder?.reset?.();wasmDecoder?.reset?.();return;
+      pendingMeta.clear();nextWebTimestampUs=1;
+      if(webDecoder){
+        try{
+          webDecoder.reset();
+          webDecoder.configure({codec:'opus',sampleRate:config.sampleRate,numberOfChannels:config.channels});
+        }catch(e){
+          webDecoder?.close?.();webDecoder=null;decoderMode='starting';
+          await queueDecoderInit({...config});
+        }
+      }
+      try{wasmDecoder?.reset?.()}catch{}
+      self.postMessage({type:'decoder-reset-ready',mode:decoderMode});
+      return;
     }
     if(m.type==='frame'){
       await decoderInitPromise.catch(()=>{});
