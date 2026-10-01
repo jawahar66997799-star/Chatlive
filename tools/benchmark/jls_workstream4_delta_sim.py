@@ -316,6 +316,8 @@ def profile_name(scenario: str, listener: Listener, now_ms: float) -> str:
         return "poor" if listener.role == "poor_member" else "wifi"
     if scenario == "server_restart":
         return "poor"
+    if scenario == "idle_cleanup_reset":
+        return "poor" if t < 90 else "wifi"
     return "wifi"
 
 
