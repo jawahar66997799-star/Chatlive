@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -513,7 +514,7 @@ func (r *Room) stateLocked(nowNS uint64, resumeEpoch, resumeSeq uint64, hasResum
 		"server_instance_id":      serverInstanceID,
 		"timeline_ready":          r.haveFrame,
 		"room_id":                 r.id,
-		"epoch":                   r.epoch,
+		"epoch":                   strconv.FormatUint(r.epoch, 10),
 		"earliest_seq":            earliest,
 		"head_seq":                head,
 		"start_seq":               startSeq,
