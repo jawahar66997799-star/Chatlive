@@ -59,3 +59,20 @@ assert.match(core,/class ServerInstanceTracker/);
 assert.match(core,/reset\(v=this\.target, nowMs=null\)/);
 
 console.log('JLS guest asset/protocol smoke tests: PASS');
+
+assert.match(player,/decodedRmsDb/);
+
+assert.match(player,/outputRmsDb/);
+
+assert.match(player,/fallbackPlayback/);
+
+assert.match(player,/Precision playout produced silence/);
+
+assert.match(player,/SAFE LOCAL/);
+
+assert.match(worker,/levelOf\(pcm\)/);
+
+assert.match(worker,/outputPeakDb/);
+
+assert.match(worklet,/outputRmsDb/);
+assert.match(worklet,/outputPeakDb/);
