@@ -20,7 +20,7 @@ wire = ">4sBBBBQQQQQIHBBBBHI"
 def http_get(path):
     req = urllib.request.Request(base + path, headers={"User-Agent": "JLS-final-smoke/1"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.status, dict(resp.headers.items()), resp.read()
+        return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
 
 
 def smoke_http_assets():
@@ -31,7 +31,7 @@ def smoke_http_assets():
     instance = health.get("server_instance_id")
     if not isinstance(instance, str) or len(instance) < 16:
         raise RuntimeError("healthz missing server_instance_id")
-    csp = headers.get("Content-Security-Policy", "")
+    csp = headers.get("content-security-policy", "")
     if "default-src 'self'" not in csp or "object-src 'none'" not in csp:
         raise RuntimeError("restrictive CSP missing")
 
