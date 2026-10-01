@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {dirname,resolve} from 'node:path';
 
 const here=dirname(fileURLToPath(import.meta.url));
@@ -37,6 +37,11 @@ assert.doesNotMatch(player,/cdn\.jsdelivr\.net/);
 assert.match(opusIndex,/createDecoder/);
 assert.ok(opusGenerated.length>10000,'vendored generated libopus module unexpectedly small');
 assert.match(opusLicense,/MIT License/);
+const opusModule=await import(pathToFileURL(resolve(web,'vendor/libopus-wasm/index.js')).href);
+assert.equal(typeof opusModule.createDecoder,'function');
+const opusDecoder=await opusModule.createDecoder({sampleRate:48000,channels:2});
+assert.equal(typeof opusDecoder.decodeFloat,'function');
+opusDecoder.free?.();
 assert.match(worklet,/hard-resync/);
 assert.match(worklet,/crossfade/);
 assert.match(worklet,/maxPpm/);
