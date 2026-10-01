@@ -35,7 +35,7 @@ data class RelayMetrics(
 class RelayClient(
     context: Context,
     private val config: RelayConfig,
-    private val epoch: Int,
+    private val epoch: Long,
     private val sampleRate: Int = 48_000,
     private val channels: Int = 2,
     private val frameMs: Int = 20,
@@ -67,7 +67,7 @@ class RelayClient(
     private val lastSentSequence = AtomicLong(0)
     private val lastRttMs = AtomicLong(-1)
     private val queue = ArrayBlockingQueue<QueuedFrame>(25)
-    private val pingSentNs = ConcurrentHashMap<Long, Long>()
+    private val pingSentNs = ConcurrentHashMap<String, Long>()
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "JlsRelayScheduler").apply { isDaemon = true }
     }
@@ -95,6 +95,7 @@ class RelayClient(
             if (!running.get()) return
             if (!hasUsableNetwork()) {
                 connected.set(false)
+                connecting.set(false)
                 socket?.cancel()
                 socket = null
                 listener.onRelayState(RelayState.NETWORK_INTERRUPTED, "No usable network is available.")
@@ -106,6 +107,14 @@ class RelayClient(
     fun start() {
         if (!config.enabled) {
             listener.onRelayState(RelayState.DISABLED, "Relay is not configured with a secure wss:// URL.")
+            return
+        }
+        if (config.room.length < 32 || config.hostToken.length < 32) {
+            authBlocked.set(true)
+            listener.onRelayState(
+                RelayState.AUTH_FAILED,
+                "Relay room ID and host secret must be configured with at least 128 bits of unguessable entropy."
+            )
             return
         }
         if (!running.compareAndSet(false, true)) return
@@ -159,21 +168,13 @@ class RelayClient(
     fun sendHostState(snapshot: CaptureSnapshot) {
         val ws = socket ?: return
         if (!connected.get() || ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) return
-
-        val msg = JSONObject()
-            .put("type", "host-state")
-            .put("protocolVersion", JlsProtocol.VERSION)
-            .put("epoch", epoch.toLong() and 0xFFFF_FFFFL)
-            .put("sequence", lastSentSequence.get())
-            .put("captureHealth", snapshot.captureHealth.name)
-            .put("effectiveHealth", snapshot.health.name)
-            .put("rmsDb", snapshot.rmsDb)
-            .put("peakDb", snapshot.peakDb)
-            .put("bitrateBps", snapshot.bitrateBps)
-            .put("bufferDepth", queue.size)
-            .put("droppedFrames", droppedFrames.get())
-            .put("reconnects", reconnectCount.get())
-        ws.send(msg.toString())
+        ws.send(
+            JSONObject()
+                .put("type", "state")
+                .put("v", JlsProtocol.VERSION)
+                .put("state", snapshot.health.name)
+                .toString()
+        )
     }
 
     private fun scheduleConnect(delayMs: Long) {
@@ -199,52 +200,67 @@ class RelayClient(
         val requestBuilder = Request.Builder()
             .url(config.hostWsUrl())
             .header("X-JLS-Protocol", JlsProtocol.VERSION.toString())
-            .header("X-JLS-Room", config.room)
         if (config.hostToken.isNotBlank()) {
             requestBuilder.header("Authorization", "Bearer " + config.hostToken)
         }
-
         client.newWebSocket(requestBuilder.build(), wsListener)
     }
 
     private val wsListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            connecting.set(false)
-            connected.set(true)
             socket = webSocket
-            val previousAttempts = reconnectAttempts.getAndSet(0)
-            if (previousAttempts > 0) reconnectCount.incrementAndGet()
-
             val hello = JSONObject()
-                .put("type", "host-hello")
-                .put("protocolVersion", JlsProtocol.VERSION)
-                .put("room", config.room)
-                .put("epoch", epoch.toLong() and 0xFFFF_FFFFL)
-                .put("resumeSequence", lastSentSequence.get())
-                .put("sampleRate", sampleRate)
-                .put("channels", channels)
+                .put("type", "hello_host")
+                .put("v", JlsProtocol.VERSION)
+                .put("room_id", config.room)
+                .put("host_secret", config.hostToken)
+                .put("epoch", epoch)
                 .put("codec", "opus")
-                .put("codecId", JlsProtocol.CODEC_OPUS)
+                .put("sample_rate", sampleRate)
+                .put("channels", channels)
                 .put("layer", JlsProtocol.LAYER_HIGH)
-                .put("frameMs", frameMs)
-                .put("bitrateBps", bitrateBps)
-                .put("dtx", false)
-                .put("inbandFec", false)
-            webSocket.send(hello.toString())
+                .put("frame_samples", sampleRate * frameMs / 1000)
+            if (lastSentSequence.get() > 0) {
+                hello.put("resume_last_seq", lastSentSequence.get())
+            }
+            if (!webSocket.send(hello.toString())) {
+                webSocket.cancel()
+                return
+            }
 
-            listener.onRelayState(
-                RelayState.CONNECTED,
-                if (reconnectCount.get() > 0) "Relay reconnected; stale audio is discarded." else "Relay connected."
-            )
-            emitMetrics()
+            scheduler.schedule({
+                if (running.get() && socket === webSocket && !connected.get()) {
+                    webSocket.cancel()
+                }
+            }, 8, TimeUnit.SECONDS)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             try {
                 val obj = JSONObject(text)
                 when (obj.optString("type")) {
-                    "host-pong", "pong" -> {
-                        val id = obj.optLong("id", Long.MIN_VALUE)
+                    "welcome_host" -> {
+                        if (obj.optInt("v", -1) != JlsProtocol.VERSION) {
+                            webSocket.close(1002, "protocol-version-mismatch")
+                            return
+                        }
+                        connecting.set(false)
+                        connected.set(true)
+                        val previousAttempts = reconnectAttempts.getAndSet(0)
+                        if (previousAttempts > 0) reconnectCount.incrementAndGet()
+                        val resumeAfter = obj.optLong("resume_after_seq", 0L)
+                        listener.onRelayState(
+                            RelayState.CONNECTED,
+                            if (reconnectCount.get() > 0) {
+                                "Relay authenticated and reconnected at server sequence $resumeAfter; stale audio is discarded."
+                            } else {
+                                "Relay authenticated. Server resume sequence: $resumeAfter."
+                            }
+                        )
+                        emitMetrics()
+                    }
+                    "pong" -> {
+                        val id = obj.optString("id")
                         val sent = pingSentNs.remove(id)
                         if (sent != null) {
                             val ms = max(0L, (SystemClock.elapsedRealtimeNanos() - sent) / 1_000_000L)
@@ -252,10 +268,21 @@ class RelayClient(
                             emitMetrics()
                         }
                     }
-                    "auth-error" -> {
-                        authBlocked.set(true)
-                        listener.onRelayState(RelayState.AUTH_FAILED, obj.optString("message", "Relay rejected host authentication."))
-                        webSocket.close(4001, "auth-failed")
+                    "error", "auth_error", "auth-error" -> {
+                        val code = obj.optString("code")
+                        val retryable = obj.optBoolean("retryable", false)
+                        val message = obj.optString("message", "Relay rejected the host connection.")
+                        if (!retryable || code.contains("auth", ignoreCase = true) ||
+                            code.contains("secret", ignoreCase = true)
+                        ) {
+                            authBlocked.set(true)
+                            connected.set(false)
+                            connecting.set(false)
+                            listener.onRelayState(RelayState.AUTH_FAILED, message)
+                            webSocket.close(1008, "auth-failed")
+                        } else {
+                            listener.onRelayState(RelayState.ERROR, message)
+                        }
                     }
                 }
             } catch (_: Throwable) {
@@ -263,7 +290,7 @@ class RelayClient(
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            if (code == 4001 || code == 4401 || code == 4403) {
+            if (code == 1008 || code == 4001 || code == 4401 || code == 4403) {
                 authBlocked.set(true)
                 listener.onRelayState(RelayState.AUTH_FAILED, "Relay authentication failed (code $code).")
             }
@@ -275,12 +302,21 @@ class RelayClient(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            handleDisconnect("Relay connection failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown"))
+            if (response?.code == 401 || response?.code == 403) {
+                authBlocked.set(true)
+                connected.set(false)
+                connecting.set(false)
+                listener.onRelayState(RelayState.AUTH_FAILED, "Relay HTTP authentication failed.")
+                return
+            }
+            handleDisconnect(
+                "Relay connection failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+            )
         }
     }
 
     private fun handleDisconnect(detail: String) {
-        if (socket != null) socket = null
+        socket = null
         connected.set(false)
         connecting.set(false)
         if (!running.get()) return
@@ -355,15 +391,17 @@ class RelayClient(
         val ws = socket ?: return
         if (ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) return
 
-        val id = SystemClock.elapsedRealtimeNanos()
-        pingSentNs[id] = id
+        val now = SystemClock.elapsedRealtimeNanos()
+        val id = now.toString()
+        pingSentNs[id] = now
         val msg = JSONObject()
-            .put("type", "host-ping")
+            .put("type", "ping")
+            .put("v", JlsProtocol.VERSION)
             .put("id", id)
-            .put("clientMonoNs", id)
+            .put("t0_ns", now)
         if (!ws.send(msg.toString())) pingSentNs.remove(id)
 
-        val cutoff = id - 30_000_000_000L
+        val cutoff = now - 30_000_000_000L
         pingSentNs.entries.removeIf { it.value < cutoff }
     }
 

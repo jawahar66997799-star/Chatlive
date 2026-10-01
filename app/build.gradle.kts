@@ -17,20 +17,41 @@ android {
         versionCode = 2
         versionName = "0.2.0-host-stream"
 
-        buildConfigField("String", "DEFAULT_RELAY_URL",
-            buildConfigString(providers.gradleProperty("JLS_RELAY_URL").orElse("").get()))
-        buildConfigField("String", "DEFAULT_ROOM",
-            buildConfigString(providers.gradleProperty("JLS_ROOM").orElse("").get()))
-        buildConfigField("String", "DEFAULT_HOST_TOKEN",
-            buildConfigString(providers.gradleProperty("JLS_HOST_TOKEN").orElse("").get()))
-        buildConfigField("String", "DEFAULT_GUEST_BASE_URL",
-            buildConfigString(providers.gradleProperty("JLS_GUEST_BASE_URL").orElse("").get()))
+        buildConfigField(
+            "String",
+            "DEFAULT_RELAY_URL",
+            buildConfigString(providers.gradleProperty("JLS_RELAY_URL").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_ROOM",
+            buildConfigString(providers.gradleProperty("JLS_ROOM").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_HOST_TOKEN",
+            buildConfigString(providers.gradleProperty("JLS_HOST_TOKEN").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_GUEST_TOKEN",
+            buildConfigString(providers.gradleProperty("JLS_GUEST_TOKEN").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_GUEST_BASE_URL",
+            buildConfigString(providers.gradleProperty("JLS_GUEST_BASE_URL").orElse("").get())
+        )
     }
 
-    buildFeatures { buildConfig = true }
+    buildFeatures {
+        buildConfig = true
+    }
 
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+        }
     }
 
     compileOptions {
@@ -38,9 +59,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions { jvmTarget = "17" }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

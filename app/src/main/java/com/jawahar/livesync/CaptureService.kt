@@ -95,7 +95,7 @@ class CaptureService : Service() {
     @Volatile private var recoveryUntilNs = 0L
 
     private var startedNs = 0L
-    private var epoch = 0
+    private var epoch = 0L
     private val sequence = AtomicLong(0)
     private lateinit var relayConfig: RelayConfig
     private var relayClient: RelayClient? = null
@@ -197,7 +197,7 @@ class CaptureService : Service() {
             projection?.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
 
             relayConfig = RelayConfig.load(this)
-            epoch = SecureRandom().nextInt()
+            epoch = SecureRandom().nextLong().and(Long.MAX_VALUE).let { if (it == 0L) 1L else it }
             sequence.set(0)
             prepareLog()
             startRelay()
@@ -423,12 +423,10 @@ class CaptureService : Service() {
                     }
 
                     var flags = 0
-                    if (pendingDiscontinuity.getAndSet(false)) flags = flags or JlsProtocol.FLAG_DISCONTINUITY
-                    if (sourceHealth == CaptureHealth.SOURCE_SILENT || sourceHealth == CaptureHealth.SOURCE_PAUSED) {
-                        flags = flags or JlsProtocol.FLAG_SOURCE_SILENT
-                    }
-                    if (effectiveHealth() == CaptureHealth.RECOVERING) {
-                        flags = flags or JlsProtocol.FLAG_RECOVERY
+                    if (pendingDiscontinuity.getAndSet(false) ||
+                        effectiveHealth() == CaptureHealth.RECOVERING
+                    ) {
+                        flags = flags or JlsProtocol.FLAG_DISCONTINUITY
                     }
 
                     val seq = sequence.incrementAndGet()
@@ -443,8 +441,7 @@ class CaptureService : Service() {
                             flags = flags,
                             payload = encoded.payload
                         ),
-                        channels = CHANNELS,
-                        frameMs = FRAME_MS
+                        channels = CHANNELS
                     )
                     relayClient?.offer(packet, frame.captureMonoNs, seq)
                 } catch (_: Throwable) {
