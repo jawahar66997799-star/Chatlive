@@ -154,6 +154,12 @@ export class SlewValue {
     this.current=clamp(initial,floor,ceiling); this.target=this.current; this.lastMs=null;
   }
   setTarget(v) { this.target=clamp(Number(v)||this.current,this.floor,this.ceiling); return this.target; }
+  reset(v=this.target, nowMs=null) {
+    this.target=clamp(Number(v)||this.current,this.floor,this.ceiling);
+    this.current=this.target;
+    this.lastMs=Number.isFinite(nowMs)?nowMs:null;
+    return this.current;
+  }
   tick(nowMs) {
     if(this.lastMs==null){this.lastMs=nowMs;return this.current;}
     const dt=clamp((nowMs-this.lastMs)/1000,0,1); this.lastMs=nowMs;
