@@ -1,7 +1,9 @@
 package com.jawahar.livesync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PipelineDiagnosticEvaluatorTest {
@@ -39,6 +41,17 @@ class PipelineDiagnosticEvaluatorTest {
             )
         )
         assertEquals(PipelineStage.WSS, result.brokenStage)
+    }
+
+    @Test
+    fun silentSourceDoesNotClaimYouTubeIsInactive() {
+        val result = PipelineDiagnosticEvaluator.evaluate(
+            healthy().copy(captureHealth = CaptureHealth.SOURCE_PAUSED)
+        )
+        assertNull(result.brokenStage)
+        assertTrue(result.detail.contains("not package-identifiable"))
+        assertTrue(result.detail.contains("remains unknown"))
+        assertFalse(result.detail.contains("YouTube playback is not active"))
     }
 
     @Test
