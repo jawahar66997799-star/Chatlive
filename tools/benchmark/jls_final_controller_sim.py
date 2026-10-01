@@ -258,7 +258,7 @@ def main():
     a=ap.parse_args()
     scenarios=['clean_wifi','good_cellular','poor_cellular','mixed','jitter50','jitter200','packet_loss','short_outage','reconnect_live_edge']
     out=[{'scenario':s,'adaptive':run_scenario(s,a.listeners,a.duration_s,a.seed,True),'fixed':fixed_baseline(s,a.listeners,a.duration_s,a.seed)} for s in scenarios]
-    payload={'evidence':EVIDENCE,'model':'production constants at youtube-live-sync 8cafe8de6d58ca708110cd37cc94dc26137fda5c','results':out}
+    payload={'evidence':EVIDENCE,'model':'production constants at youtube-live-sync 5726c9960c7cd1c5a714722fa012af7beca53a99','results':out}
     print(markdown(out))
     if a.json_out: Path(a.json_out).write_text(json.dumps(payload,indent=2),encoding='utf-8')
     if a.md_out: Path(a.md_out).write_text(markdown(out),encoding='utf-8')
