@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
             textSize = 17f
             text = "Relay: DISABLED"
             setPadding(0, 6, 0, 12)
+            setOnClickListener { showRelaySettings() }
             setOnLongClickListener {
                 showRelaySettings()
                 true
@@ -172,6 +173,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val relaySetup = Button(this).apply {
+            text = "SETUP RELAY"
+            setOnClickListener { showRelaySettings() }
+        }
+
         val shareGuest = Button(this).apply {
             text = "SHARE GUEST LINK"
             setOnClickListener { shareGuestLink() }
@@ -220,6 +226,7 @@ class MainActivity : ComponentActivity() {
         root.addView(detail, matchWrap())
         root.addView(startStop, matchWrap())
         root.addView(openYouTube, matchWrap())
+        root.addView(relaySetup, matchWrap())
         root.addView(shareGuest, matchWrap())
         root.addView(shareLog, matchWrap())
         root.addView(battery, matchWrap())
@@ -408,7 +415,7 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle("Relay setup")
             .setMessage(
-                "Advanced integration setting. Long-press Relay to reopen. " +
+                "Enter the private host provisioning values. " +
                     "Stop and restart hosting after saving."
             )
             .setView(box)
