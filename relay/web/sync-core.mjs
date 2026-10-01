@@ -280,3 +280,123 @@ export class ServerInstanceTracker {
     return {changed:true,initial:false,id,previous,changes:this.changes};
   }
 }
+
+
+export const GUEST_PIPELINE_STATES = Object.freeze({
+  CONNECTING:'CONNECTING',
+  RELAY_CONNECTED:'RELAY_CONNECTED',
+  WAITING_FOR_HOST:'WAITING_FOR_HOST',
+  HOST_ONLINE:'HOST_ONLINE',
+  WAITING_FOR_AUDIO:'WAITING_FOR_AUDIO',
+  AUDIO_RECEIVING:'AUDIO_RECEIVING',
+  DECODER_READY:'DECODER_READY',
+  BUFFERING:'BUFFERING',
+  CLOCK_LOCKED:'CLOCK_LOCKED',
+  PLAYING:'PLAYING',
+  NETWORK_LOST:'NETWORK_LOST',
+  HOST_STALLED:'HOST_STALLED',
+  NO_BINARY_AUDIO:'NO_BINARY_AUDIO',
+  DECODER_FAILED:'DECODER_FAILED',
+  AUDIOCONTEXT_SUSPENDED:'AUDIOCONTEXT_SUSPENDED',
+  AUTOPLAY_BLOCKED:'AUTOPLAY_BLOCKED',
+  BUFFER_UNDERRUN:'BUFFER_UNDERRUN',
+  RESYNCING:'RESYNCING',
+  INVALID_LINK:'INVALID_LINK',
+});
+
+const finiteAge=(now,at)=>Number.isFinite(at)&&at>0?Math.max(0,now-at):Infinity;
+const stateResult=(code,label,reason,action,tone='warn')=>({code,label,reason,action,tone});
+
+/**
+ * Evidence-driven guest UX state. This intentionally separates "scheduled"
+ * from "audibly rendering": PLAYING requires recent non-silent output evidence.
+ * It is pure so every transition can be regression-tested without a browser.
+ */
+export function deriveGuestPipelineState(e={},nowMs=0){
+  const S=GUEST_PIPELINE_STATES;
+  const now=Number.isFinite(nowMs)?nowMs:0;
+  const relayAge=finiteAge(now,e.lastRelayMessageAt);
+  const binaryAge=finiteAge(now,e.lastBinaryAt);
+  const hostAge=finiteAge(now,e.hostOnlineAt);
+  const outputAge=finiteAge(now,e.lastAudibleOutputAt);
+  const directAge=finiteAge(now,e.lastDirectAudibleAt);
+  const outputAudible=!!e.outputAudible || outputAge<=1100 || directAge<=1100;
+  const bufferMs=Math.max(0,Number(e.bufferMs)||0);
+  const targetDelayMs=Math.max(0,Number(e.targetDelayMs)||0);
+  const minUsefulBuffer=Math.max(20,Math.min(120,targetDelayMs>0?targetDelayMs*0.18:80));
+  const relayFresh=relayAge<=3500;
+  const binaryFrames=Math.max(0,Number(e.binaryFrames)||0);
+  const pcmFrames=Math.max(0,Number(e.pcmFrames)||0);
+  const audioState=String(e.audioContextState||'none');
+
+  if(!e.hasRoom)
+    return stateResult(S.INVALID_LINK,S.INVALID_LINK,'The guest link does not contain a valid room token.','Open a fresh guest link from the host.','bad');
+
+  if(e.networkOnline===false)
+    return stateResult(S.NETWORK_LOST,S.NETWORK_LOST,'This device is offline.','Restore network access; reconnect and live-edge resume are automatic.','bad');
+
+  if(!e.relayOpen){
+    if(e.everRelayConnected)
+      return stateResult(S.NETWORK_LOST,S.NETWORK_LOST,'The relay connection was lost.','Reconnecting automatically; stale backlog will not be replayed.','bad');
+    return stateResult(S.CONNECTING,S.CONNECTING,'Opening the secure live connection.','No action is needed unless this persists.','warn');
+  }
+
+  if(!relayFresh && e.everRelayConnected)
+    return stateResult(S.NETWORK_LOST,S.NETWORK_LOST,'The relay socket is open but no fresh relay traffic is arriving.','Replacing the stale connection automatically.','bad');
+
+  if(!e.relayStateKnown)
+    return stateResult(S.RELAY_CONNECTED,S.RELAY_CONNECTED,'The relay transport is connected.','Waiting for authoritative room state.','warn');
+
+  if(e.hostOnline!==true)
+    return stateResult(S.WAITING_FOR_HOST,S.WAITING_FOR_HOST,'The relay is reachable, but the host is offline.','Start or reconnect Jawahar Live Sync on the host phone.','warn');
+
+  if(e.decoderFailed)
+    return stateResult(S.DECODER_FAILED,S.DECODER_FAILED,e.decoderError||'The Opus decoder failed to initialize or decode.','Reload once; if it persists, inspect decoder diagnostics.','bad');
+
+  if(binaryFrames>0 && binaryAge>3500 && relayFresh)
+    return stateResult(S.HOST_STALLED,S.HOST_STALLED,'The host is still marked online, but live audio packets stopped arriving.','The guest will stay at the live edge while the host/relay path recovers.','bad');
+
+  if(binaryFrames===0){
+    if(hostAge<=600)
+      return stateResult(S.HOST_ONLINE,S.HOST_ONLINE,'The host has just come online.','Waiting for its first live audio packet.','warn');
+    if(hostAge<=2600)
+      return stateResult(S.WAITING_FOR_AUDIO,S.WAITING_FOR_AUDIO,'The host is online, but no binary audio has arrived yet.','Start audible media on the host.','warn');
+    return stateResult(S.NO_BINARY_AUDIO,S.NO_BINARY_AUDIO,'The host is online, but the guest has received no binary audio stream.','Check host playback capture and relay uplink diagnostics.','bad');
+  }
+
+  if(!e.decoderReady)
+    return stateResult(S.AUDIO_RECEIVING,S.AUDIO_RECEIVING,'Live binary audio packets are arriving.','Starting the Opus decoder.','warn');
+
+  if(pcmFrames===0)
+    return stateResult(S.DECODER_READY,S.DECODER_READY,'The decoder is ready, but it has not produced PCM yet.','Waiting for a decodable live audio frame.','warn');
+
+  if(!e.decodedSignal)
+    return stateResult(S.WAITING_FOR_AUDIO,S.WAITING_FOR_AUDIO,'Audio frames decode correctly, but the decoded signal is silent.','Play audible media on the host and verify non-zero capture level.','warn');
+
+  if(audioState!=='running'){
+    if(e.unlockAttempted)
+      return stateResult(S.AUDIOCONTEXT_SUSPENDED,S.AUDIOCONTEXT_SUSPENDED,`Browser audio is ${audioState} after playback was enabled.`,'Tap RESUME LISTENING if the browser requires a new gesture.','bad');
+    return stateResult(S.AUTOPLAY_BLOCKED,S.AUTOPLAY_BLOCKED,'Decoded live audio is ready, but browser autoplay policy has not released the audio output.','Tap TO LISTEN once.','warn');
+  }
+
+  if(Number.isFinite(e.resyncUntil)&&e.resyncUntil>now)
+    return stateResult(S.RESYNCING,S.RESYNCING,e.resyncReason||'A large timing or output-route change is being corrected.','Keep listening; stale timing state is being discarded and rebuilt.','warn');
+
+  if(outputAudible){
+    const mode=e.continuityMode?'continuity fallback':'synchronized output';
+    const syncSuffix=e.clockLocked?'Clock is locked.':'Audio is audible while precision clock lock finishes.';
+    return stateResult(S.PLAYING,S.PLAYING,`Non-silent audio is rendering through the ${mode}. ${syncSuffix}`,'No action needed.','ok');
+  }
+
+  const underrunAge=finiteAge(now,e.lastUnderrunAt);
+  if(underrunAge<=1200)
+    return stateResult(S.BUFFER_UNDERRUN,S.BUFFER_UNDERRUN,'The output buffer ran dry before the next live PCM block arrived.','Continuity recovery is active; the jitter recommendation will increase.','bad');
+
+  if(!e.clockLocked)
+    return stateResult(S.BUFFERING,`BUFFERING ${Math.round(bufferMs)} ms`,'Decoded audio is available while the relay clock model is still converging.','Keeping a bounded live buffer while clock samples lock.','warn');
+
+  if(!e.schedulerReady || (!e.continuityMode && bufferMs<minUsefulBuffer))
+    return stateResult(S.BUFFERING,`BUFFERING ${Math.round(bufferMs)} ms`,`Clock is locked; the output scheduler is filling toward a safe live playout depth (target ${Math.round(targetDelayMs)} ms).`,'Playback will begin only after scheduled output has real audio to render.','warn');
+
+  return stateResult(S.CLOCK_LOCKED,S.CLOCK_LOCKED,'Relay clock and room timeline are locked, and audio is scheduled for output.','Waiting for the first non-silent rendered output sample.','warn');
+}
