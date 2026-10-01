@@ -22,7 +22,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     this.fadeFrames=Math.max(32,Math.round(sampleRate*.010));
     this.tailL=new Float32Array(this.fadeFrames); this.tailR=new Float32Array(this.fadeFrames); this.tailWrite=0;
     this.crossfade=null;
-    this.levelSumSq=0;this.levelPeak=0;this.levelSamples=0;
+    this.levelSumSq=0;this.levelPeak=0;this.levelSamples=0;this.processQuanta=0;
     this.port.onmessage=e=>this.onMessage(e.data||{});
   }
 
@@ -132,6 +132,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs,outputs){
+    this.processQuanta++;
     const out=outputs[0],L=out[0],R=out[1]||out[0]; L.fill(0);R.fill(0);
     let wroteAudio=false,underrunThisQuantum=false;
     for(let i=0;i<L.length;i++){
@@ -169,7 +170,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
       for(const b of this.queue)queued+=b.frames;
       const rms=this.levelSamples?Math.sqrt(this.levelSumSq/this.levelSamples):0;
       const db=v=>v>1e-6?Math.max(-120,20*Math.log10(v)):-120;
-      this.port.postMessage({type:'metrics',bufferFrames:queued,bufferMs:queued*1000/this.sourceRate,ppm:this.controller.ppm,underruns:this.underruns,lateFrames:this.lateFrames,hardResyncs:this.hardResyncs,overruns:this.overruns,active:wroteAudio,outputRmsDb:db(rms),outputPeakDb:db(this.levelPeak)});
+      this.port.postMessage({type:'metrics',bufferFrames:queued,bufferMs:queued*1000/this.sourceRate,ppm:this.controller.ppm,underruns:this.underruns,lateFrames:this.lateFrames,hardResyncs:this.hardResyncs,overruns:this.overruns,active:wroteAudio,processQuanta:this.processQuanta,outputRmsDb:db(rms),outputPeakDb:db(this.levelPeak)});
       this.levelSumSq=0;this.levelPeak=0;this.levelSamples=0;
     }
     return true;
