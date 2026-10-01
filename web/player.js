@@ -13,11 +13,12 @@ let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
 let audioEngineRebuilds=0,audioEngineRebuilding=false;
+let directGain=null,directNextTime=null,directSources=new Set();
 let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -42,7 +43,7 @@ function repairJoinState(){
 function diagnosePipeline(){
   const wsOpen=!!ws&&ws.readyState===WebSocket.OPEN;
   const decodedAudible=metrics.decodedRmsDb>-70;
-  const outputAudible=metrics.outputRmsDb>-90||metrics.workletActive;
+  const outputAudible=metrics.outputRmsDb>-90||metrics.workletActive||(metrics.directPlayback&&metrics.directSources>0);
 
   let code='OK',message='Live audio pipeline is healthy.',action='No action needed.';
 
@@ -147,9 +148,10 @@ async function rebuildAudioEngine(reason){
   if(audioEngineRebuilding)return;
   audioEngineRebuilding=true;
   try{
-    try{node?.disconnect()}catch{}
+    stopDirectPlayback();try{node?.disconnect()}catch{}
     try{await audio?.close?.()}catch{}
-    node=null;audio=null;sabWriter=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;
+    node=null;audio=null;sabWriter=null;directGain=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;
+    metrics.workletAlive=false;metrics.workletActive=false;
     await ensureAudio();
     await audio.resume();
     if(audio.state!=='running')throw new Error('AudioContext '+audio.state);
@@ -167,7 +169,7 @@ async function rebuildAudioEngine(reason){
 function resetPlayout(reason){
   timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;
   fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackEnteredAt=null;precisionRecoveryGraceUntil=0;lastPrecisionRecoveryAttempt=0;
-  sabWriter?.reset();node?.port.postMessage({type:'reset'});
+  stopDirectPlayback();sabWriter?.reset();node?.port.postMessage({type:'reset'});
   // Playout resets must never tear down the Opus decoder. In WebCodecs,
   // AudioDecoder.reset() returns the decoder to an unconfigured state; doing
   // that on the user's Listen gesture caused decoded audio to stop before any
@@ -251,6 +253,43 @@ function onControl(text){
   if(m.type==='host-online'){hostOnline=true;setState(joined?'Buffering…':'Host online',joined?'warn':'ok')}
 }
 
+function ensureDirectGain(){
+  if(!audio)return null;
+  if(directGain)return directGain;
+  directGain=audio.createGain();directGain.gain.value=1;directGain.connect(audio.destination);
+  return directGain;
+}
+
+function stopDirectPlayback(){
+  for(const s of directSources){try{s.stop()}catch{} try{s.disconnect()}catch{}}
+  directSources.clear();directNextTime=null;metrics.directSources=0;metrics.directPlayback=false;
+  try{directGain?.disconnect()}catch{} directGain=null;
+}
+
+function scheduleDirectBuffer(m,reason='worklet unavailable'){
+  if(!audio||audio.state!=='running'||!m?.pcm||!Number.isFinite(m.frames)||m.frames<=0)return false;
+  try{
+    const sourceRate=Number(m.sampleRate)||sampleRate||48000;
+    const buffer=audio.createBuffer(2,m.frames,sourceRate);
+    const l=buffer.getChannelData(0),r=buffer.getChannelData(1);
+    for(let i=0;i<m.frames;i++){l[i]=m.pcm[i*2]||0;r[i]=m.pcm[i*2+1]||0}
+    const src=audio.createBufferSource();src.buffer=buffer;src.connect(ensureDirectGain());
+    const now=audio.currentTime;
+    if(!Number.isFinite(directNextTime)||directNextTime<now+.025)directNextTime=now+.060;
+    const start=directNextTime;directNextTime+=m.frames/sourceRate;
+    directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
+    src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
+    src.start(start);
+    metrics.playoutGate='DIRECT BUFFER playing: '+reason;
+    if(hostOnline)setState('Listening · compatibility mode','ok');
+    return true;
+  }catch(err){
+    metrics.schedulerErrors++;metrics.lastSchedulerError='direct-buffer: '+String(err?.message||err);
+    note('DIRECT_BUFFER_ERROR: '+metrics.lastSchedulerError.slice(0,240));
+    return false;
+  }
+}
+
 function enterSafeLocal(reason){
   if(fallbackPlayback)return;
   fallbackPlayback=true;metrics.fallbackPlayback=true;fallbackNextTargetFrame=null;
@@ -273,7 +312,7 @@ function exitSafeLocalForPrecision(targetPerf,reason='clock/timeline recovered')
 }
 
 function maybeRecoverPrecisionFromSafeLocal(m,now=performance.now()){
-  if(!fallbackPlayback||!joined||!audio||audio.state!=='running'||!clock.ready||!roomTimeline)return false;
+  if(!fallbackPlayback||!joined||!audio||audio.state!=='running'||!clock.ready||!roomTimeline||!metrics.workletAlive)return false;
   if(fallbackEnteredAt==null||now-fallbackEnteredAt<1200)return false;
   if(lastPrecisionRecoveryAttempt&&now-lastPrecisionRecoveryAttempt<750)return false;
 
@@ -296,8 +335,16 @@ function maybeRecoverPrecisionFromSafeLocal(m,now=performance.now()){
 }
 
 function scheduleSafeLocal(m,reason='watchdog'){
-  if(!joined||!node||!audio||audio.state!=='running')return false;
+  if(!joined||!audio||audio.state!=='running')return false;
   enterSafeLocal(reason);
+
+  const workletDead=metrics.workletProcessorErrors>0||(!metrics.workletAlive&&decodedAudibleSince!=null&&performance.now()-decodedAudibleSince>650);
+  if(workletDead){
+    const ok=scheduleDirectBuffer(m,reason);
+    if(ok){metrics.scheduledFrames++;lastEpoch=String(m.epoch);lastSeq=String(m.seq)}
+    return ok;
+  }
+  if(!node)return false;
   const leadFrames=Math.round(audio.sampleRate*.10);
   const nowFrame=Math.round(audio.currentTime*audio.sampleRate);
   if(!Number.isFinite(fallbackNextTargetFrame)||fallbackNextTargetFrame<nowFrame+Math.round(audio.sampleRate*.03)){
@@ -512,6 +559,7 @@ function render(){
     'Output level: '+fmt(metrics.outputRmsDb)+' dBFS · peak '+fmt(metrics.outputPeakDb)+' dBFS · active '+(metrics.workletActive?'yes':'no'),
     'Worklet: '+(metrics.workletAlive?'alive':'NO HEARTBEAT')+' · quanta '+metrics.workletQuanta+' · processor errors '+metrics.workletProcessorErrors,
     'Scheduler: '+metrics.scheduledFrames+' frames · errors '+metrics.schedulerErrors+(metrics.lastSchedulerError?' · '+metrics.lastSchedulerError.slice(0,120):''),
+    'Direct fallback: '+(metrics.directPlayback?'ON':'off')+' · active sources '+metrics.directSources+' · frames '+metrics.directScheduledFrames,
     'Fallback: '+(metrics.fallbackPlayback?'SAFE LOCAL':'precision')+' · engine rebuilds '+metrics.audioEngineRebuilds,
     'Playout gate: '+metrics.playoutGate,
     'Late: '+metrics.lateFrames+' · underruns: '+metrics.underruns,
