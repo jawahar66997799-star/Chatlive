@@ -265,7 +265,7 @@ class RelayClient(
                         )
                         emitMetrics()
                     }
-                    "clock_resp" -> {
+                    "pong", "clock_resp" -> {
                         val id = obj.optString("id")
                         val sent = pingSentNs.remove(id)
                         if (sent != null) {
@@ -401,7 +401,7 @@ class RelayClient(
         val id = now.toString()
         pingSentNs[id] = now
         val msg = JSONObject()
-            .put("type", "clock_req")
+            .put("type", "ping")
             .put("v", JlsProtocol.VERSION)
             .put("id", id)
             .put("t0_ns", now)
