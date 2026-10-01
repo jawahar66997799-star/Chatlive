@@ -32,6 +32,9 @@ jobs:
       - name: Acoustic calibration synthetic self-test
         run: python3 tools/benchmark/jls_calibration_selftest.py
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Generate E2E reference assets
         run: |
           python3 tools/benchmark/jls_generate_e2e_signal.py \
