@@ -88,10 +88,10 @@ function applyPipelineState(now=performance.now()){
   metrics.pipelineState=p.code;metrics.pipelineLabel=p.label;metrics.pipelineReason=p.reason;metrics.pipelineAction=p.action;
   metrics.pipelineStateSinceMs=pipelineStateSince;metrics.pipelineTransitions=pipelineTransitions;metrics.binaryFrames=binaryFrames;metrics.pcmFrames=pcmFrames;metrics.clockLocked=isClockLocked();
   metrics.continuityState=continuity.code;
-  ui.state.textContent=continuity.label;ui.dot.className='dot '+(continuity.tone==='ok'?'ok':continuity.tone==='bad'?'bad':'');
-  if(ui.reason)ui.reason.textContent=p.code+': '+p.reason;
-  ui.note.textContent=continuity.action+(p.code!==continuity.code?' '+p.action:'');
-  if(continuity.code==='LIVE'){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
+  ui.state.textContent=p.label;ui.dot.className='dot '+(p.tone==='ok'?'ok':p.tone==='bad'?'bad':'');
+  if(ui.reason)ui.reason.textContent=p.reason;
+  ui.note.textContent=p.action+(continuity.code!==p.code?' Transport: '+continuity.code+'.':'');
+  if(p.code==='PLAYING'){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
   else if(p.code==='AUTOPLAY_BLOCKED'){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';}
   else if(p.code==='AUDIOCONTEXT_SUSPENDED'){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';}
   else if(audio?.state==='running'&&joined){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
