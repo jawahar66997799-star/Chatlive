@@ -409,8 +409,8 @@ func (r *Room) adjustCommonDelayLocked(nowNS uint64) bool {
 	var next uint64
 	if targetNS > current {
 		step := uint64(float64(r.delayUpNSPerSec) * elapsedSec)
-		if step < uint64(time.Millisecond) {
-			step = uint64(time.Millisecond)
+		if step == 0 {
+			return false
 		}
 		if current+step < targetNS {
 			next = current + step
@@ -419,8 +419,8 @@ func (r *Room) adjustCommonDelayLocked(nowNS uint64) bool {
 		}
 	} else {
 		step := uint64(float64(r.delayDownNSPerSec) * elapsedSec)
-		if step < uint64(time.Millisecond) {
-			step = uint64(time.Millisecond)
+		if step == 0 {
+			return false
 		}
 		if targetNS+step < current {
 			next = current - step
