@@ -3,7 +3,7 @@ name: JLS Benchmark Final
 on:
   push:
     branches:
-      - workstream-4-benchmarking-final
+      - workstream-4-benchmarking-final-current
   workflow_dispatch:
 
 jobs:
@@ -51,10 +51,11 @@ jobs:
           test -s /tmp/jls-e2e.json
           test -s /tmp/jls-e2e.mp4
 
-      - name: Shell syntax
+      - name: Shell syntax and harness argument smoke test
         run: |
           bash -n tools/benchmark/jls_failure_harness.sh
           bash -n tools/benchmark/jls_make_e2e_video.sh
+          bash tools/benchmark/jls_failure_harness.sh android youtube-seek | grep -q "Seek is intentionally manual"
 
       - uses: actions/upload-artifact@v4
         with:
