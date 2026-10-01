@@ -66,7 +66,7 @@ assert.match(player,/outputRmsDb/);
 
 assert.match(player,/fallbackPlayback/);
 
-assert.match(player,/Precision playout produced silence/);
+assert.match(player,/Precision sync is not producing output/);
 
 assert.match(player,/SAFE LOCAL/);
 
