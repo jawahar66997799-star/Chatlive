@@ -94,3 +94,7 @@ assert.match(player,/OUTPUT_SILENT/);
 assert.match(player,/Pipeline: relay/);
 assert.match(player,/Self-heals:/);
 assert.match(player,/repairJoinState\(\);[\s\S]*if\(!audio\|\|!node\)/);
+
+assert.match(player,/startup scheduler bootstrap/);
+assert.match(player,/AudioContext\.running is the browser's authoritative proof/);
+assert.doesNotMatch(player,/if\s*\(!joined\)\s*\{\s*metrics\.playoutGate='waiting for audio join';\s*return;/);
