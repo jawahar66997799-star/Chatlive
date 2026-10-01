@@ -119,7 +119,7 @@ assert.match(worklet,/processQuanta/);
 
 
 assert.match(player,/function startTransportWatchdog/);
-assert.match(player,/relayAge>5500/);
+assert.match(player,/relayAge>3500/);
 assert.match(player,/Math\.min\(2000/);
 assert.match(player,/transportWatchdogReconnects/);
 assert.match(player,/Transport age: relay/);
