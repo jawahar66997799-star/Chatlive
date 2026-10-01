@@ -143,7 +143,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.6'
           cache: false
 
       - name: Install pinned OSV-Scanner v2.4.0
