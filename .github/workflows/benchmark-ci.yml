@@ -16,6 +16,7 @@ jobs:
         run: |
           python3 -m py_compile \
             tools/benchmark/jls_network_clock_sim.py \
+            tools/benchmark/jls_buffer_sweep.py \
             tools/benchmark/jls_calibration.py \
             tools/benchmark/jls_calibration_selftest.py \
             tools/benchmark/jls_generate_e2e_signal.py \
@@ -29,6 +30,19 @@ jobs:
             --json-out /tmp/jls-sim.json --md-out /tmp/jls-sim.md
           cat /tmp/jls-sim.md
 
+      - name: Adaptive common-delay sweep
+        run: |
+          python3 tools/benchmark/jls_buffer_sweep.py \
+            --listeners 20 --duration-s 120 \
+            --json-out /tmp/jls-buffer-sweep.json | tee /tmp/jls-buffer-sweep.md
+
+      - name: Long mixed outage simulation
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py \
+            --listeners 20 --duration-s 240 --scenario mixed --mode adaptive \
+            --json-out /tmp/jls-outage-sim.json --md-out /tmp/jls-outage-sim.md
+          cat /tmp/jls-outage-sim.md
+
       - name: Acoustic calibration synthetic self-test
         run: python3 tools/benchmark/jls_calibration_selftest.py
 
@@ -40,7 +54,14 @@ jobs:
           test -s /tmp/jls-e2e.json
 
       - name: Shell syntax
-        run: bash -n tools/benchmark/jls_failure_harness.sh
+        run: |
+          bash -n tools/benchmark/jls_failure_harness.sh
+          bash -n tools/benchmark/jls_generate_e2e_video.sh
+
+      - name: Build short reference video
+        run: |
+          bash tools/benchmark/jls_generate_e2e_video.sh 3 /tmp/jls-e2e.mov
+          test -s /tmp/jls-e2e.mov
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,6 +71,11 @@ jobs:
             /tmp/jls-sim.md
             /tmp/jls-e2e.json
             /tmp/jls-e2e.wav
+            /tmp/jls-e2e.mov
+            /tmp/jls-buffer-sweep.json
+            /tmp/jls-buffer-sweep.md
+            /tmp/jls-outage-sim.json
+            /tmp/jls-outage-sim.md
 
   integration-contract:
     runs-on: ubuntu-latest
