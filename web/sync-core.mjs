@@ -436,7 +436,7 @@ export function deriveGuestPipelineState(e={},nowMs=0){
   }
 
   const underrunAge=finiteAge(now,e.lastUnderrunAt);
-  if(underrunAge<=1200)
+  if(underrunAge<=2500)
     return stateResult(S.BUFFER_UNDERRUN,S.BUFFER_UNDERRUN,'The output buffer ran dry before the next live PCM block arrived.','Continuity recovery is active; the jitter recommendation will increase.','bad');
 
   if(!e.clockLocked)
