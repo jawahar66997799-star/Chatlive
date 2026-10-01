@@ -1,0 +1,30 @@
+name: Guest sync tests
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - 'relay/web/**'
+      - '.github/workflows/guest-sync-tests.yml'
+  pull_request:
+    paths:
+      - 'relay/web/**'
+      - '.github/workflows/guest-sync-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  guest-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check guest runtime
+        run: |
+          node --check relay/web/player.js
+          node --check relay/web/decoder-worker.js
+          node --check relay/web/worklet.js
+          node --check relay/web/sync-core.mjs
+      - name: Deterministic synchronization tests
+        run: node relay/web/tests/sync-core.test.mjs
