@@ -117,7 +117,27 @@ func TestSyntheticHostRelayGuestResumeSmoke(t *testing.T) {
 	}
 
 	if err:=host.WriteMessage(websocket.BinaryMessage,smokeFrame(epoch,1,0,[]byte{1,2,3}));err!=nil{t.Fatal(err)}
-	got:=readBinary(t,guest)
+	var got []byte
+	seenTimelineAnchor:=false
+	for i:=0;i<8;i++ {
+		mt,b,err:=guest.ReadMessage();if err!=nil{t.Fatal(err)}
+		if mt==websocket.TextMessage {
+			var m map[string]any
+			if json.Unmarshal(b,&m)==nil&&m["type"]=="state"&&m["reason"]=="timeline_started" {
+				if m["timeline_ready"]!=true {t.Fatalf("timeline_started not ready: %#v",m)}
+				tl,ok:=m["timeline"].(map[string]any);if !ok {t.Fatalf("missing timeline: %#v",m)}
+				if origin,ok:=tl["origin_server_ns"].(float64);!ok||origin<=0 {t.Fatalf("invalid timeline origin: %#v",tl)}
+				seenTimelineAnchor=true
+			}
+			continue
+		}
+		if mt==websocket.BinaryMessage {
+			if !seenTimelineAnchor {t.Fatal("first binary audio arrived before canonical timeline anchor state")}
+			got=b
+			break
+		}
+	}
+	if got==nil {t.Fatal("first binary frame not received")}
 	f,err:=parseAudioFrame(got,16384);if err!=nil{t.Fatal(err)}
 	if f.Epoch!=epoch||f.Sequence!=1||f.SamplePosition!=0||f.RelayIngressNS==0 {t.Fatalf("bad relayed frame: %+v",f)}
 
