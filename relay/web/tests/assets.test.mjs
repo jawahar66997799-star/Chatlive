@@ -27,6 +27,8 @@ assert.match(player,/getOutputTimestamp/);
 assert.match(player,/outputLatency/);
 assert.match(player,/baseLatency/);
 assert.match(player,/SharedArrayBuffer/);
+assert.match(player,/roomDNeedsAuthoritativeSnap/);
+assert.match(player,/roomD\.reset\(ms,performance\.now\(\)\)/);
 assert.match(player,/visibilitychange/);
 assert.match(worker,/JLS1\/64/);
 assert.match(worker,/webcodecs-opus/);
@@ -54,5 +56,6 @@ assert.match(core,/class AdaptiveDelay/);
 assert.match(core,/class PIController/);
 assert.match(core,/class OutputTimeMapper/);
 assert.match(core,/class ServerInstanceTracker/);
+assert.match(core,/reset\(v=this\.target, nowMs=null\)/);
 
 console.log('JLS guest asset/protocol smoke tests: PASS');
