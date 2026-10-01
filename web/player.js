@@ -13,8 +13,9 @@ let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
 let roomDNeedsAuthoritativeSnap=true;
+let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,scheduledFrames:0,fallbackPlayback:false,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -72,7 +73,7 @@ async function ensureAudio(){
 }
 
 function resetPlayout(reason){
-  timeline.reset();currentEpoch=null;roomTimeline=null;outputMap=new OutputTimeMapper();sabWriter?.reset();node?.port.postMessage({type:'reset'});decoder?.postMessage({type:'reset'});
+  timeline.reset();currentEpoch=null;roomTimeline=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;sabWriter?.reset();node?.port.postMessage({type:'reset'});decoder?.postMessage({type:'reset'});
   if(reason==='epoch')note('Host started a fresh stream. Re-aligning…');
   else if(reason==='server-restart')note('Relay restarted. Rebuilding the clock and live timeline…');
   else note('Re-aligning to the live timeline…');
@@ -154,7 +155,13 @@ function onDecoded(m){
   if(m.type==='decoder-ready'){metrics.decoder=m.mode;return}
   if(m.type==='decoder-error'){if(m.fatal){setState('Audio decoder unavailable','bad');note(m.message)}return}
   if(m.type!=='pcm-frame'||m.generation!==generation)return;
-  metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;if(!joined||!node||!audio||!clock.ready)return;
+  metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;
+  metrics.decodedRmsDb=Number.isFinite(m.decodedRmsDb)?m.decodedRmsDb:-120;
+  metrics.decodedPeakDb=Number.isFinite(m.decodedPeakDb)?m.decodedPeakDb:-120;
+  if(metrics.decodedRmsDb>-70){
+    if(decodedAudibleSince==null)decodedAudibleSince=performance.now();
+  }else decodedAudibleSince=null;
+  if(!joined||!node||!audio||!clock.ready)return;
   const epoch=String(m.epoch);
   if(m.discontinuity){timeline.reset();sabWriter?.reset();node.port.postMessage({type:'reset'});metrics.hardResyncs++}
   if(currentEpoch===null)currentEpoch=epoch;else if(epoch!==currentEpoch){resetPlayout('epoch');currentEpoch=epoch}
@@ -170,11 +177,33 @@ function onDecoded(m){
   const targetPerf=clock.localAtServer(targetServerTimeMs(tr.timelineServerMs,d));if(!Number.isFinite(targetPerf))return;
   const now=performance.now();if(targetPerf<now-1000){metrics.staleDrops++;return}
   let ct=outputMap.contextTimeForPerformance(targetPerf);if(!Number.isFinite(ct))ct=fallbackContextTimeForPerformance(audio.currentTime,now,targetPerf,bestFallbackLatency());
-  const meta={targetFrame:Math.round(ct*audio.sampleRate),startSample:tr.startSample,frames:m.frames};
+  let meta={targetFrame:Math.round(ct*audio.sampleRate),startSample:tr.startSample,frames:m.frames};
   if(targetPerf<now){metrics.lateFrames++;suggestedD.markLate(now,now-targetPerf)}
-  if(sabWriter){if(!sabWriter.write(m.pcm,meta)){metrics.overruns++;metrics.hardResyncs++;sabWriter.reset();node.port.postMessage({type:'reset'});sabWriter.write(m.pcm,meta)}}
-  else node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
-  if(hostOnline&&audio.state==='running')setState('Listening','ok');
+
+  const silentOutputForMs=decodedAudibleSince==null?0:now-decodedAudibleSince;
+  if(!fallbackPlayback && silentOutputForMs>1200 && metrics.scheduledFrames>=20 && metrics.outputRmsDb<=-90){
+    fallbackPlayback=true;metrics.fallbackPlayback=true;fallbackNextTargetFrame=null;
+    sabWriter?.reset();node.port.postMessage({type:'reset'});
+    note('Precision playout produced silence; switched to safe local playback.');
+  }
+
+  if(fallbackPlayback){
+    const leadFrames=Math.round(audio.sampleRate*.25);
+    const nowFrame=Math.round(audio.currentTime*audio.sampleRate);
+    if(!Number.isFinite(fallbackNextTargetFrame)||fallbackNextTargetFrame<nowFrame+Math.round(audio.sampleRate*.05)){
+      fallbackNextTargetFrame=nowFrame+leadFrames;
+    }
+    meta={targetFrame:fallbackNextTargetFrame,startSample:tr.startSample,frames:m.frames};
+    fallbackNextTargetFrame+=Math.round(m.frames*audio.sampleRate/(m.sampleRate||sampleRate));
+    node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
+  }else if(sabWriter){
+    if(!sabWriter.write(m.pcm,meta)){
+      metrics.overruns++;metrics.hardResyncs++;sabWriter.reset();node.port.postMessage({type:'reset'});
+      sabWriter.write(m.pcm,meta);
+    }
+  }else node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
+  metrics.scheduledFrames++;
+  if(hostOnline&&audio.state==='running')setState(fallbackPlayback?'Listening · safe mode':'Listening','ok');
 }
 
 function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
@@ -186,7 +215,10 @@ function sampleOutputClock(){
   if(metrics.outputLatencyMs!=null)lastOutputLatency=metrics.outputLatencyMs;
 }
 function onWorklet(m){
-  if(m.type==='metrics'){metrics.bufferMs=m.bufferMs;metrics.resamplerPpm=m.ppm;metrics.underruns=m.underruns;metrics.lateFrames=Math.max(metrics.lateFrames,m.lateFrames);metrics.hardResyncs=Math.max(metrics.hardResyncs,m.hardResyncs);metrics.overruns=Math.max(metrics.overruns,m.overruns)}
+  if(m.type==='metrics'){
+    metrics.bufferMs=m.bufferMs;metrics.resamplerPpm=m.ppm;metrics.underruns=m.underruns;metrics.lateFrames=Math.max(metrics.lateFrames,m.lateFrames);metrics.hardResyncs=Math.max(metrics.hardResyncs,m.hardResyncs);metrics.overruns=Math.max(metrics.overruns,m.overruns);
+    metrics.outputRmsDb=Number.isFinite(m.outputRmsDb)?m.outputRmsDb:-120;metrics.outputPeakDb=Number.isFinite(m.outputPeakDb)?m.outputPeakDb:-120;metrics.workletActive=!!m.active;
+  }
   else if(m.type==='underrun'){metrics.underruns=m.count;suggestedD.markLate(performance.now(),30);setState('Buffering…','warn')}
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
   else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;note('Large timing error corrected with a short crossfade.')}
@@ -227,6 +259,9 @@ function render(){
     'PCM queued: '+fmt(metrics.bufferMs)+' ms',
     'Room D: '+fmt(metrics.targetDelayMs)+' ms · recommended '+fmt(metrics.recommendedDelayMs)+' ms',
     'Decoder: '+metrics.decoder+' · '+fmt(metrics.decoderMs)+' ms',
+    'Decoded level: '+fmt(metrics.decodedRmsDb)+' dBFS · peak '+fmt(metrics.decodedPeakDb)+' dBFS',
+    'Output level: '+fmt(metrics.outputRmsDb)+' dBFS · peak '+fmt(metrics.outputPeakDb)+' dBFS · active '+(metrics.workletActive?'yes':'no'),
+    'Scheduled: '+metrics.scheduledFrames+' · fallback: '+(metrics.fallbackPlayback?'SAFE LOCAL':'precision'),
     'Late: '+metrics.lateFrames+' · underruns: '+metrics.underruns,
     'Resampler: '+fmt(metrics.resamplerPpm)+' ppm',
     'Hard resyncs: '+metrics.hardResyncs+' · overruns: '+metrics.overruns,
