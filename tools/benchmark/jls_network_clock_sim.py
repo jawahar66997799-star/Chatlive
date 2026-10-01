@@ -286,6 +286,23 @@ def simulate(
     skew_samples: List[float] = []
     current_offsets = [l.best_clock_offset_ms for l in listeners]
     next_clock_refresh = [5_000.0] * count
+    recovering = [False] * count
+
+    # Acoustic calibration measures total relative physical arrival bias while all
+    # devices schedule on the same server timeline. It therefore absorbs both
+    # static clock-estimator bias and device output latency at the calibration
+    # condition. device-0 is the arbitrary acoustic reference.
+    calibration_advance_ms = [0.0] * count
+    if mode == "adaptive":
+        tcal = 2_000.0
+        physical_bias = []
+        for l, est_offset in zip(listeners, current_offsets):
+            target_local = tcal - est_offset
+            digital_server = (target_local - l.clock_offset_ms) / (1.0 + l.clock_drift_ppm / 1_000_000.0)
+            physical_bias.append(digital_server + l.output_latency_ms - tcal)
+        ref_bias = physical_bias[0]
+        for i, l in enumerate(listeners):
+            calibration_advance_ms[i] = (physical_bias[i] - ref_bias) + l.calibration_error_ms
 
     for frame_idx in range(frame_count):
         server_frame_ms = frame_idx * PACKET_MS
@@ -293,7 +310,9 @@ def simulate(
 
         for idx, (l, m) in enumerate(zip(listeners, metrics)):
             if mode == "adaptive" and server_frame_ms >= next_clock_refresh[idx]:
-                current_offsets[idx], _ = periodic_clock_estimate(l, server_frame_ms, rng)
+                refreshed, _ = periodic_clock_estimate(l, server_frame_ms, rng)
+                # Smooth refreshes so jitter in one clock sample cannot step audio.
+                current_offsets[idx] = 0.85 * current_offsets[idx] + 0.15 * refreshed
                 next_clock_refresh[idx] += 5_000.0
 
             arrival = network_arrival(l, server_frame_ms, rng)
@@ -304,7 +323,7 @@ def simulate(
             delay_local = target_local_perf - local_arrival
 
             if mode == "adaptive":
-                target_local_perf -= (l.output_latency_ms + l.calibration_error_ms)
+                target_local_perf -= calibration_advance_ms[idx]
                 delay_local = target_local_perf - local_arrival
 
             digital_wait = max(0.0, delay_local) / (1.0 + l.audio_drift_ppm / 1_000_000.0)
@@ -319,6 +338,17 @@ def simulate(
                 correction = max(-250.0, min(250.0, -l.audio_drift_ppm))
                 m.correction_samples_ppm.append(correction)
                 effective_rate = 1.0 + (l.audio_drift_ppm + correction) / 1_000_000.0
+                # A severely stale TCP/HOL frame is discarded. Keeping it would
+                # permanently drag this listener behind the shared timeline.
+                if delay_local < -80.0:
+                    if not recovering[idx]:
+                        m.hard_resyncs += 1
+                        recovering[idx] = True
+                    m.underrun_ms += PACKET_MS
+                    continue
+                if recovering[idx]:
+                    previous_end[idx] = None
+                    recovering[idx] = False
             else:
                 m.correction_samples_ppm.append(0.0)
                 effective_rate = 1.0 + l.audio_drift_ppm / 1_000_000.0
@@ -327,7 +357,8 @@ def simulate(
             prev_end = previous_end[idx]
             if prev_end is not None:
                 phase_gap = start_digital - prev_end
-                if mode == "adaptive" and abs(phase_gap) > 80.0:
+                if mode == "adaptive" and phase_gap < -80.0:
+                    # Cut stale backlog and jump forward to this frame.
                     m.hard_resyncs += 1
                 elif start_digital < prev_end:
                     start_digital = prev_end
@@ -340,7 +371,9 @@ def simulate(
             physical_start = start_digital + l.output_latency_ms
             physical_speaker_starts.append(physical_start)
 
-        if len(physical_speaker_starts) >= 2:
+        # Skew is defined only for source frames rendered by every listener.
+        # Dropped frames are penalized separately in continuity/hard-resync stats.
+        if len(physical_speaker_starts) == count:
             skew_samples.append(max(physical_speaker_starts) - min(physical_speaker_starts))
 
     total_audio_ms = duration_s * 1000.0
