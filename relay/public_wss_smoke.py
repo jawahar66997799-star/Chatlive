@@ -15,11 +15,15 @@ room = os.environ["ROOM"]
 host_secret = os.environ["HOST_SECRET"]
 guest_token = os.environ["GUEST_TOKEN"]
 expect_protected_metrics = os.environ.get("EXPECT_PROTECTED_METRICS", "1") == "1"
+metrics_token = os.environ.get("METRICS_TOKEN", "").strip()
 wire = ">4sBBBBQQQQQIHBBBBHI"
 
 
-def http_get(path):
-    req = urllib.request.Request(base + path, headers={"User-Agent": "JLS-final-smoke/1"})
+def http_get(path, extra_headers=None):
+    headers = {"User-Agent": "JLS-final-smoke/1"}
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(base + path, headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
 
@@ -69,11 +73,21 @@ def smoke_http_assets():
     if expect_protected_metrics and metrics_protected is not True:
         raise RuntimeError("metrics endpoint is not protected")
 
-    return instance, csp, sizes, metrics_protected
+    metrics_authenticated = None
+    if metrics_token:
+        s, _, data = http_get(
+            "/metrics",
+            {"Authorization": "Bearer " + metrics_token},
+        )
+        if s != 200 or b"jls_common_delay_ms" not in data:
+            raise RuntimeError("authenticated metrics request failed")
+        metrics_authenticated = True
+
+    return instance, csp, sizes, metrics_protected, metrics_authenticated
 
 
 async def main():
-    instance, csp, asset_sizes, metrics_protected = smoke_http_assets()
+    instance, csp, asset_sizes, metrics_protected, metrics_authenticated = smoke_http_assets()
     # Deliberately above JavaScript's Number.MAX_SAFE_INTEGER so the public
     # control plane must preserve it as an exact decimal string. A fresh epoch
     # per run also avoids turning an intentional smoke retry into a replay.
@@ -149,6 +163,7 @@ async def main():
                 "epoch": epoch,
                 "server_instance_id": instance,
                 "metrics_protected": metrics_protected,
+                "metrics_authenticated": metrics_authenticated,
                 "csp_present": bool(csp),
                 "asset_sizes": asset_sizes,
             }, sort_keys=True), flush=True)
