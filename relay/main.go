@@ -150,6 +150,9 @@ func main() {
 	mux.HandleFunc("/ws/listen", s.legacyGuestWS)
 	mux.HandleFunc("/r/", serveWeb)
 	mux.HandleFunc("/worklet.js", serveWeb)
+	mux.HandleFunc("/player.js", serveWeb)
+	mux.HandleFunc("/decoder-worker.js", serveWeb)
+	mux.HandleFunc("/sync-core.mjs", serveWeb)
 	mux.HandleFunc("/", serveWeb)
 
 	go func() {
@@ -192,22 +195,24 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func serveWeb(w http.ResponseWriter, r *http.Request) {
 	sub, _ := fs.Sub(webFS, "web")
-	if r.URL.Path == "/worklet.js" {
-		b, err := fs.ReadFile(sub, "worklet.js")
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("content-type", "text/javascript; charset=utf-8")
-		_, _ = w.Write(b)
-		return
+	name := "index.html"
+	contentType := "text/html; charset=utf-8"
+	switch r.URL.Path {
+	case "/worklet.js":
+		name, contentType = "worklet.js", "text/javascript; charset=utf-8"
+	case "/player.js":
+		name, contentType = "player.js", "text/javascript; charset=utf-8"
+	case "/decoder-worker.js":
+		name, contentType = "decoder-worker.js", "text/javascript; charset=utf-8"
+	case "/sync-core.mjs":
+		name, contentType = "sync-core.mjs", "text/javascript; charset=utf-8"
 	}
-	b, err := fs.ReadFile(sub, "index.html")
+	b, err := fs.ReadFile(sub, name)
 	if err != nil {
-		http.Error(w, "guest player unavailable", 500)
+		http.Error(w, "guest player asset unavailable", 500)
 		return
 	}
-	w.Header().Set("content-type", "text/html; charset=utf-8")
+	w.Header().Set("content-type", contentType)
 	_, _ = w.Write(b)
 }
 
