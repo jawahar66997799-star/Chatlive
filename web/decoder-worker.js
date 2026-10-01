@@ -6,6 +6,18 @@ let pendingMeta = new Map();
 let nextWebTimestampUs = 1;
 let decoderInitPromise = Promise.resolve();
 function postError(message, fatal=false) { self.postMessage({ type:'decoder-error', message:String(message), fatal, mode:decoderMode }); }
+
+function levelOf(pcm){
+  if(!pcm?.length)return {rmsDb:-120,peakDb:-120};
+  let sum=0,peak=0;
+  for(let i=0;i<pcm.length;i++){
+    const v=Number(pcm[i])||0,a=Math.abs(v);
+    sum+=v*v;if(a>peak)peak=a;
+  }
+  const rms=Math.sqrt(sum/pcm.length);
+  const db=v=>v>1e-6?Math.max(-120,20*Math.log10(v)):-120;
+  return {rmsDb:db(rms),peakDb:db(peak)};
+}
 async function initDecoder(next) {
   const desired = { ...config, ...next };
   const sameConfig =
@@ -75,7 +87,8 @@ function handleWebCodecsOutput(audioData){
   const frames=audioData.numberOfFrames,channels=Math.min(2,audioData.numberOfChannels),planar=[];
   try{for(let c=0;c<channels;c++){const a=new Float32Array(frames);audioData.copyTo(a,{planeIndex:c,format:'f32-planar'});planar.push(a);}if(!planar.length)throw new Error('AudioData has no channels');
     const pcm=new Float32Array(frames*2);for(let i=0;i<frames;i++){pcm[i*2]=planar[0][i];pcm[i*2+1]=(planar[1]||planar[0])[i];}
-    self.postMessage({type:'pcm-frame',...meta,frames,channels:2,sampleRate:audioData.sampleRate,decodeMs:performance.now()-started,pcm},[pcm.buffer]);
+    const level=levelOf(pcm);
+    self.postMessage({type:'pcm-frame',...meta,frames,channels:2,sampleRate:audioData.sampleRate,decodeMs:performance.now()-started,decodedRmsDb:level.rmsDb,decodedPeakDb:level.peakDb,pcm},[pcm.buffer]);
   }catch(e){postError(e?.message||e);}finally{audioData.close();}
 }
 async function decodeOpus(msg){
@@ -90,7 +103,8 @@ async function decodeOpus(msg){
   if(decoderMode.startsWith('wasm-opus')&&wasmDecoder){
     try{const decoded=wasmDecoder.decodeFloat(packet),f32=decoded instanceof Float32Array?decoded:new Float32Array(decoded.buffer??decoded),frames=Math.floor(f32.length/Math.max(1,config.channels)),pcm=new Float32Array(frames*2);
       for(let i=0;i<frames;i++){const l=f32[i*config.channels],rr=config.channels>1?f32[i*config.channels+1]:l;pcm[i*2]=l;pcm[i*2+1]=rr;}
-      self.postMessage({type:'pcm-frame',...(msg.meta||{}),frames,channels:2,sampleRate:config.sampleRate,decodeMs:performance.now()-started,pcm},[pcm.buffer]);
+      const level=levelOf(pcm);
+      self.postMessage({type:'pcm-frame',...(msg.meta||{}),frames,channels:2,sampleRate:config.sampleRate,decodeMs:performance.now()-started,decodedRmsDb:level.rmsDb,decodedPeakDb:level.peakDb,pcm},[pcm.buffer]);
     }catch(e){postError(e?.message||e);}return;
   }
   postError('Opus frame received before a decoder became available',true);
