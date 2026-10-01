@@ -1,0 +1,141 @@
+name: JLS Release Security
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - 'app/**'
+      - 'relay/**'
+      - 'web/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/jls-release-security.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'relay/**'
+      - 'web/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/jls-release-security.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject obvious live-secret and third-party decoder regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git grep -nE --             '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|JLS_HOST_SECRET[[:space:]]*=[[:space:]]*[^"<$[:space:]][^[:space:]]{20,}'             -- ':!*.md' ':!relay/web/vendor/**' ':!web/vendor/**'
+          then
+            echo "Potential hard-coded secret material found." >&2
+            exit 1
+          fi
+
+          if git grep -nE 'cdn\.jsdelivr\.net/npm/libopus-wasm|unpkg\.com/.+libopus'             -- relay/web web
+          then
+            echo "Runtime third-party Opus decoder dependency reintroduced." >&2
+            exit 1
+          fi
+
+          test -s relay/web/vendor/libopus-wasm/index.js
+          test -s relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+          test -s relay/web/vendor/libopus-wasm/MANIFEST.sha256
+
+          cmp relay/web/player.js web/player.js
+          cmp relay/web/decoder-worker.js web/decoder-worker.js
+          cmp relay/web/sync-core.mjs web/sync-core.mjs
+          cmp relay/web/worklet.js web/worklet.js
+
+  go-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: relay/go.sum
+
+      - name: Go dependency inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p security-artifacts
+          cd relay
+          go list -m -json all > ../security-artifacts/go-modules.json
+          go version > ../security-artifacts/go-version.txt
+          go env GOVERSION GOOS GOARCH >> ../security-artifacts/go-version.txt
+
+      - name: govulncheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd relay
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JLS-Go-Security-Inventory
+          path: security-artifacts/
+          if-no-files-found: error
+
+  android-dependency-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Resolve and record Android runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p security-artifacts
+          gradle :app:dependencies --configuration debugRuntimeClasspath > security-artifacts/android-debug-runtime-dependencies.txt
+          gradle :app:dependencies --configuration releaseRuntimeClasspath > security-artifacts/android-release-runtime-dependencies.txt
+
+          if grep -E '[+][[:space:]]*$|:[[:digit:]]+\.[[:digit:]]+\.[+]'             security-artifacts/android-*-runtime-dependencies.txt
+          then
+            echo "Dynamic dependency version detected." >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JLS-Android-Dependency-Inventory
+          path: security-artifacts/
+          if-no-files-found: error
