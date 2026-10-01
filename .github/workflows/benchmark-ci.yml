@@ -34,14 +34,16 @@ jobs:
           test -s /tmp/jls-e2e.json
 
       - name: Shell syntax
-        run: bash -n tools/benchmark/jls_failure_harness.sh
+        run: bash -n tools/benchmark/jls_failure_harness.sh tools/benchmark/jls_make_e2e_video.sh
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
+          cache: false
 
       - name: Build relay and synthetic probe
         working-directory: relay
         run: |
+          go mod download
           go test ./...
           go build ./cmd/jlsprobe
