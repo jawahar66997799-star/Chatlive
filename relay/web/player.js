@@ -170,8 +170,8 @@ async function ensureAudio(){
   metrics.audioState=audio.state;sampleOutputClock();
   audio.addEventListener('statechange',()=>{
     metrics.audioState=audio.state;
-    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';setState('Playback interrupted','bad')}
-    else if(audio.state==='running'&&joined&&hostOnline)showContinuityState(true);
+    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO'}
+    applyPipelineState();
   });
 }
 
@@ -199,6 +199,8 @@ async function rebuildAudioEngine(reason){
 
 function resetPlayout(reason){
   timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;
+  if(reason==='host-offline'||reason==='epoch'||reason==='server-restart')resetAudioEvidence();
+  if(reason==='epoch'||reason==='server-restart'||reason==='resume')markResync(reason,1200);
   fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackEnteredAt=null;precisionRecoveryGraceUntil=0;lastPrecisionRecoveryAttempt=0;
   stopDirectPlayback();sabWriter?.reset();node?.port.postMessage({type:'reset'});
   // Playout resets must never tear down the Opus decoder. In WebCodecs,
@@ -234,8 +236,8 @@ function connect(force=false){
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState('Connected · checking live state','warn');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);clearTimeout(stableOpenTimer);stableOpenTimer=setTimeout(()=>{if(gen===generation&&ws?.readyState===WebSocket.OPEN)backoff=100},5000);startTransportWatchdog()};
-  ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
+  ws.onopen=()=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();everRelayConnected=true;ui.join.disabled=false;clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);clearTimeout(stableOpenTimer);stableOpenTimer=setTimeout(()=>{if(gen===generation&&ws?.readyState===WebSocket.OPEN)backoff=100},5000);startTransportWatchdog();applyPipelineState()};
+  ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;if(!firstBinaryAt)firstBinaryAt=t;binaryFrames++;metrics.binaryFrames=binaryFrames;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
   ws.onclose=e=>{
     if(gen!==generation)return;
     clearInterval(clockTimer);clockTimer=null;clearTimeout(stableOpenTimer);stableOpenTimer=null;stopTransportWatchdog();
@@ -254,6 +256,7 @@ function connect(force=false){
       setState(carryingAudio?'RECONNECTING · buffered audio playing':'RECONNECTING','warn');
       note('Connection interrupted; recovery is automatic and stale backlog will not be replayed.');
     }
+    applyPipelineState();
     scheduleReconnect();
   };
   ws.onerror=()=>{};
@@ -302,7 +305,7 @@ function onControl(text){
   }
   if(m.type==='state'){
     observeServerInstance(m.server_instance_id);
-    hostOnline=!!m.host_online;const tl=m.timeline||{};
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=!!m.host_online;if(hostOnline&&!wasHostOnline)hostOnlineAt=performance.now();if(!hostOnline)hostOnlineAt=0;const tl=m.timeline||{};
     relayStreamState=String(m.stream_state||(hostOnline?(m.timeline_ready===false?'HOST_CONNECTED_NO_AUDIO':'AUDIO_FLOWING'):'CONNECTED_NO_HOST'));
     hostCaptureState=String(m.host_capture_state||'');
     metrics.relayStreamState=relayStreamState;metrics.hostCaptureState=hostCaptureState;
@@ -326,7 +329,7 @@ function onControl(text){
     return;
   }
   if(m.type==='hello'){
-    hostOnline=!!m.hostOnline;relayStreamState=hostOnline?'AUDIO_FLOWING':'CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=!!m.hostOnline;if(hostOnline&&!wasHostOnline)hostOnlineAt=performance.now();if(!hostOnline)hostOnlineAt=0;relayStreamState=hostOnline?'AUDIO_FLOWING':'CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.reset(d,performance.now());roomDNeedsAuthoritativeSnap=false;
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline)showContinuityState(false);
@@ -334,9 +337,9 @@ function onControl(text){
     else showContinuityState(false);
     return;
   }
-  if(m.type==='host-offline'){hostOnline=false;relayStreamState='CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;resetPlayout('host-offline');showContinuityState(false)}
+  if(m.type==='host-offline'){relayStateKnown=true;hostOnline=false;hostOnlineAt=0;relayStreamState='CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;resetPlayout('host-offline');applyPipelineState()}
   if(m.type==='host-online'){
-    hostOnline=true;relayStreamState='HOST_CONNECTED_NO_AUDIO';metrics.relayStreamState=relayStreamState;
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=true;if(!wasHostOnline)hostOnlineAt=performance.now();relayStreamState='HOST_CONNECTED_NO_AUDIO';metrics.relayStreamState=relayStreamState;
     showContinuityState(false);
   }
 }
@@ -350,7 +353,7 @@ function ensureDirectGain(){
 
 function stopDirectPlayback(){
   for(const s of directSources){try{s.stop()}catch{} try{s.disconnect()}catch{}}
-  directSources.clear();directNextTime=null;metrics.directSources=0;metrics.directPlayback=false;
+  directSources.clear();directNextTime=null;directAudibleFromPerf=0;directAudibleUntilPerf=0;metrics.directSources=0;metrics.directPlayback=false;
   try{directGain?.disconnect()}catch{} directGain=null;
 }
 
@@ -368,6 +371,11 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
     src.start(start);
+    if((Number(m.decodedPeakDb)||metrics.decodedPeakDb)>-90){
+      const perfNow=performance.now(),startPerf=perfNow+Math.max(0,start-now)*1000,endPerf=startPerf+(m.frames/sourceRate)*1000;
+      if(directAudibleUntilPerf<perfNow)directAudibleFromPerf=startPerf;
+      directAudibleUntilPerf=Math.max(directAudibleUntilPerf,endPerf);
+    }
     metrics.playoutGate='DIRECT BUFFER playing: '+reason;
     if(hostOnline)showContinuityState(true,' · compatibility mode');
     return true;
@@ -458,10 +466,10 @@ function shouldForceSafeLocal(now=performance.now()){
 }
 
 function onDecoded(m){
-  if(m.type==='decoder-ready'){metrics.decoder=m.mode;return}
-  if(m.type==='decoder-error'){if(m.fatal){setState('Audio decoder unavailable','bad');note(m.message)}return}
+  if(m.type==='decoder-ready'){metrics.decoder=m.mode;decoderFailed=false;decoderError='';applyPipelineState();return}
+  if(m.type==='decoder-error'){if(m.fatal){decoderFailed=true;decoderError=String(m.message||'decoder failed');metrics.decoder='opus-unavailable';applyPipelineState()}return}
   if(m.type!=='pcm-frame'||m.generation!==generation)return;
-  metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;
+  lastPcmAt=performance.now();pcmFrames++;metrics.pcmFrames=pcmFrames;metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;
   metrics.decodedRmsDb=Number.isFinite(m.decodedRmsDb)?m.decodedRmsDb:-120;
   metrics.decodedPeakDb=Number.isFinite(m.decodedPeakDb)?m.decodedPeakDb:-120;
   if(metrics.decodedRmsDb>-70){
@@ -518,7 +526,7 @@ function onDecoded(m){
     return;
   }
   const epoch=String(m.epoch);
-  if(m.discontinuity){timeline.reset();sabWriter?.reset();node.port.postMessage({type:'reset'});metrics.hardResyncs++}
+  if(m.discontinuity){timeline.reset();sabWriter?.reset();node.port.postMessage({type:'reset'});metrics.hardResyncs++;markResync('Host stream discontinuity; re-anchoring the live timeline.',900)}
   if(currentEpoch===null)currentEpoch=epoch;else if(epoch!==currentEpoch){resetPlayout('epoch');currentEpoch=epoch}
   metrics.epoch=epoch;
   const ingressMs=Number(BigInt(m.serverNs))/1e6,pos=Number.isFinite(m.samplePosition)?m.samplePosition:null;
@@ -574,13 +582,14 @@ function sampleOutputClock(){
   if(!audio)return;
   try{if(typeof audio.getOutputTimestamp==='function'){const t=audio.getOutputTimestamp();if(Number.isFinite(t?.performanceTime)&&t.performanceTime>0&&Number.isFinite(t?.contextTime))outputMap.add({performanceTimeMs:t.performanceTime,contextTimeSec:t.contextTime})}}catch{}
   const o=Number(audio.outputLatency),b=Number(audio.baseLatency);metrics.outputLatencyMs=Number.isFinite(o)?o*1000:null;metrics.baseLatencyMs=Number.isFinite(b)?b*1000:null;
-  if(lastOutputLatency!=null&&metrics.outputLatencyMs!=null&&Math.abs(metrics.outputLatencyMs-lastOutputLatency)>10&&joined){outputMap=new OutputTimeMapper();timeline.reset();node?.port.postMessage({type:'reset'});metrics.hardResyncs++;note('Audio output route changed; re-aligning.')}
+  if(lastOutputLatency!=null&&metrics.outputLatencyMs!=null&&Math.abs(metrics.outputLatencyMs-lastOutputLatency)>10&&joined){outputMap=new OutputTimeMapper();timeline.reset();node?.port.postMessage({type:'reset'});metrics.hardResyncs++;markResync('Audio output route changed; rebuilding output timing.',1200);note('Audio output route changed; re-aligning.')}
   if(metrics.outputLatencyMs!=null)lastOutputLatency=metrics.outputLatencyMs;
 }
 function onWorklet(m){
   if(m.type==='metrics'){
     metrics.bufferMs=m.bufferMs;metrics.resamplerPpm=m.ppm;metrics.underruns=m.underruns;metrics.lateFrames=Math.max(metrics.lateFrames,m.lateFrames);metrics.hardResyncs=Math.max(metrics.hardResyncs,m.hardResyncs);metrics.overruns=Math.max(metrics.overruns,m.overruns);
     metrics.outputRmsDb=Number.isFinite(m.outputRmsDb)?m.outputRmsDb:-120;metrics.outputPeakDb=Number.isFinite(m.outputPeakDb)?m.outputPeakDb:-120;metrics.workletActive=!!m.active;
+    if(metrics.outputPeakDb>-90||metrics.outputRmsDb>-90)lastAudibleOutputAt=performance.now();
     metrics.workletAlive=true;metrics.workletQuanta=Number(m.processQuanta)||metrics.workletQuanta;
   }
   else if(m.type==='underrun'){
@@ -604,7 +613,7 @@ function onWorklet(m){
     }
   }
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
-  else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;note('Large timing error corrected with a short crossfade.')}
+  else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;markResync('Large timing error corrected with a short crossfade.',900);note('Large timing error corrected with a short crossfade.')}
   else if(m.type==='overrun')metrics.overruns=m.count;
 }
 
@@ -617,6 +626,7 @@ async function holdWakeLock(){
   }catch{}
 }
 async function unlock(){
+  unlockAttempted=true;
   try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';resetPlayout('join');showContinuityState(false);note('Live audio only. No YouTube or song download is needed on this device.')}
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
@@ -642,8 +652,8 @@ function resumeVisible(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
-window.addEventListener('online',()=>connect(true));
-window.addEventListener('offline',()=>setState('Network offline','bad'));
+window.addEventListener('online',()=>{connect(true);applyPipelineState()});
+window.addEventListener('offline',()=>applyPipelineState());
 try{
   navigator.connection?.addEventListener?.('change',()=>{
     // A Wi-Fi/cellular route change can leave an apparently-open TCP socket
@@ -653,7 +663,7 @@ try{
     else connect();
   });
 }catch{}
-try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
+try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++;markResync('Audio output device changed; rebuilding output timing.',1200)}})}catch{}
 
 function sendStats(){
   if(!ws||ws.readyState!==WebSocket.OPEN)return;
@@ -670,8 +680,10 @@ function render(){
   const decodeOk=metrics.decoder!=='starting'&&metrics.decoder!=='opus-unavailable'&&metrics.decodedRmsDb>-70;
   const audioOk=!!audio&&!!node&&audio.state==='running'&&joined;
   const scheduleOk=metrics.scheduledFrames>0;
-  const outputOk=metrics.outputRmsDb>-90||metrics.workletActive;
+  const outputOk=(lastAudibleOutputAt>0&&performance.now()-lastAudibleOutputAt<=1100)||directOutputAudible();
   ui.diag.textContent=[
+    'STATE: '+metrics.pipelineState+' · '+metrics.pipelineLabel,
+    'STATE AGE: '+fmt(performance.now()-metrics.pipelineStateSinceMs)+' ms · transitions '+metrics.pipelineTransitions,
     'DIAGNOSIS: '+diagnosis.code,
     'Cause: '+diagnosis.message,
     'Action: '+diagnosis.action,
