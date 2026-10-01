@@ -131,15 +131,18 @@ type HostHello struct {
 }
 
 type GuestControl struct {
-	Type          string  `json:"type"`
-	V             int     `json:"v"`
-	ID            string  `json:"id,omitempty"`
-	T0GuestNS     uint64  `json:"t0_guest_ns,omitempty"`
-	Epoch         uint64  `json:"epoch,omitempty"`
-	LastSequence  uint64  `json:"last_sequence,omitempty"`
-	BufferDepthMS float64 `json:"buffer_depth_ms,omitempty"`
-	Underruns     uint64  `json:"underruns,omitempty"`
-	LateFrames    uint64  `json:"late_frames,omitempty"`
+	Type               string  `json:"type"`
+	V                  int     `json:"v"`
+	ID                 string  `json:"id,omitempty"`
+	T0GuestNS          uint64  `json:"t0_guest_ns,omitempty"`
+	Epoch              uint64  `json:"epoch,omitempty"`
+	LastSequence       uint64  `json:"last_sequence,omitempty"`
+	BufferDepthMS      float64 `json:"buffer_depth_ms,omitempty"`
+	Underruns          uint64  `json:"underruns,omitempty"`
+	LateFrames         uint64  `json:"late_frames,omitempty"`
+	RecommendedDelayMS float64 `json:"recommended_delay_ms,omitempty"`
+	ResamplerPPM       float64 `json:"resampler_ppm,omitempty"`
+	HardResyncs        uint64  `json:"hard_resyncs,omitempty"`
 }
 
 type HostControl struct {
