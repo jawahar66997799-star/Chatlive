@@ -1,4 +1,4 @@
-import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,ServerInstanceTracker,targetServerTimeMs,fallbackContextTimeForPerformance,deriveGuestPipelineState} from './sync-core.mjs';
+import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,ServerInstanceTracker,targetServerTimeMs,fallbackContextTimeForPerformance,deriveGuestPipelineState,deriveGuestContinuityState} from './sync-core.mjs';
 
 const q=s=>document.querySelector(s);
 const ui={room:q('#room'),state:q('#state'),reason:q('#reason'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
@@ -13,7 +13,7 @@ let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map(),stableOpenTimer=null;
 let lastRelayMessageAt=0,lastBinaryAt=0,transportWatchdogTimer=null;
 let relayStateKnown=false,everRelayConnected=false,hostOnlineAt=0,firstBinaryAt=0,binaryFrames=0,lastPcmAt=0,pcmFrames=0;
-let decoderFailed=false,decoderError='',unlockAttempted=false,resyncUntil=0,resyncReason='';
+let decoderFailed=false,decoderError='',unlockAttempted=false,resyncUntil=0,resyncReason='',guestTooSlowUntil=0;
 let lastAudibleOutputAt=0,lastDirectAudibleAt=0,directAudibleFromPerf=0,directAudibleUntilPerf=0,currentPipeline=null,pipelineStateSince=0,pipelineTransitions=0;
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null,wakeLock=null;
 let relayStreamState='CONNECTED_NO_HOST',hostCaptureState='';
@@ -74,19 +74,22 @@ function pipelineEvidence(now=performance.now()){
     outputAudible:(lastAudibleOutputAt>0&&now-lastAudibleOutputAt<=1100)||directOutputAudible(now),
     lastAudibleOutputAt,lastDirectAudibleAt,lastUnderrunAt,
     resyncUntil,resyncReason,
-    continuityMode:metrics.fallbackPlayback||metrics.directPlayback,
+    continuityMode:metrics.fallbackPlayback||metrics.directPlayback,guestTooSlowUntil,
   };
 }
 function applyPipelineState(now=performance.now()){
-  const p=deriveGuestPipelineState(pipelineEvidence(now),now);
+  const evidence=pipelineEvidence(now);
+  const p=deriveGuestPipelineState(evidence,now);
+  const continuity=deriveGuestContinuityState(evidence,now);
   if(!currentPipeline||currentPipeline.code!==p.code){pipelineTransitions++;pipelineStateSince=now;}
   currentPipeline=p;
   metrics.pipelineState=p.code;metrics.pipelineLabel=p.label;metrics.pipelineReason=p.reason;metrics.pipelineAction=p.action;
   metrics.pipelineStateSinceMs=pipelineStateSince;metrics.pipelineTransitions=pipelineTransitions;metrics.binaryFrames=binaryFrames;metrics.pcmFrames=pcmFrames;metrics.clockLocked=isClockLocked();
-  ui.state.textContent=p.label;ui.dot.className='dot '+(p.tone==='ok'?'ok':p.tone==='bad'?'bad':'');
-  if(ui.reason)ui.reason.textContent=p.reason;
-  ui.note.textContent=p.action;
-  if(p.code==='PLAYING'){ui.join.disabled=true;ui.join.textContent='PLAYING';}
+  metrics.continuityState=continuity.code;
+  ui.state.textContent=continuity.label;ui.dot.className='dot '+(continuity.tone==='ok'?'ok':continuity.tone==='bad'?'bad':'');
+  if(ui.reason)ui.reason.textContent=p.code+': '+p.reason;
+  ui.note.textContent=continuity.action+(p.code!==continuity.code?' '+p.action:'');
+  if(continuity.code==='LIVE'){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
   else if(p.code==='AUTOPLAY_BLOCKED'){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';}
   else if(p.code==='AUDIOCONTEXT_SUSPENDED'){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';}
   else if(audio?.state==='running'&&joined){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
@@ -246,6 +249,7 @@ function connect(force=false){
     const carryingAudio=joined&&audio?.state==='running'&&(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>80);
     const tooSlow=String(e?.reason||'').includes('GUEST_TOO_SLOW');
     if(tooSlow){
+      guestTooSlowUntil=performance.now()+2500;
       metrics.faultCode='GUEST_TOO_SLOW';
       setState('GUEST_TOO_SLOW · rejoining live','warn');
       note('This listener fell behind the live edge. Stale queued audio was dropped and a fresh live-edge connection is starting.');
@@ -687,6 +691,7 @@ function render(){
     'DIAGNOSIS: '+diagnosis.code,
     'Cause: '+diagnosis.message,
     'Action: '+diagnosis.action,
+    'Continuity: '+(metrics.continuityState||'—'),
     'Pipeline: relay '+(wsOk?'✓':'✗')+' | host '+(hostOnline?'✓':'✗')+' | stream '+relayStreamState+' | decode '+(decodeOk?'✓':'✗')+' | audio '+(audioOk?'✓':'✗')+' | schedule '+(scheduleOk?'✓':'✗')+' | output '+(outputOk?'✓':'✗'),
     'Host capture: '+(hostCaptureState||'—'),
     'Self-heals: '+metrics.selfHeals,
