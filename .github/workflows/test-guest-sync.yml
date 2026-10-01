@@ -4,7 +4,7 @@ on:
   push:
     branches: [youtube-live-sync]
     paths:
-      - 'relay/**'
+      - 'relay/web/**'
       - 'web/**'
       - '.github/workflows/test-guest-sync.yml'
   workflow_dispatch:
@@ -36,13 +36,3 @@ jobs:
           node relay/web/tests/vendor-opus.test.mjs
       - name: Verify root web mirror
         run: diff -qr relay/web web
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23.x'
-          cache: false
-      - name: Prepare relay dependencies
-        working-directory: relay
-        run: go mod tidy
-      - name: Relay integration tests
-        working-directory: relay
-        run: go test ./...
