@@ -87,33 +87,39 @@ assert.match(player,/Playout gate:/);
 assert.doesNotMatch(player,/silentOutputForMs>1200\s*&&\s*metrics\.scheduledFrames>=20/);
 
 assert.match(player,/function repairJoinState/);
-assert.match(player,/function diagnosePipeline/);
-assert.match(player,/function applyDiagnosisState/);
-assert.match(player,/applyDiagnosisState\(diagnosis\)/);
-assert.match(player,/RELAY_DISCONNECTED:\['Relay disconnected · retrying','warn'\]/);
-assert.match(player,/NO_HOST_AUDIO:\['No host audio','warn'\]/);
-assert.match(player,/CLOCK_CALIBRATING:\['Calibrating synchronization…','warn'\]/);
-assert.match(player,/SCHEDULER_BLOCKED:\['Recovering output scheduler','warn'\]/);
-assert.match(player,/OUTPUT_SILENT:\['Output silent · recovering','bad'\]/);
-assert.match(player,/ui\.note\.textContent=diagnosis\.code\+'[^']*'/);
-assert.match(player,/JOIN_STATE_STUCK/);
-assert.match(player,/SCHEDULER_BLOCKED/);
-assert.match(player,/OUTPUT_SILENT/);
-assert.match(player,/Pipeline: relay/);
-assert.match(player,/Self-heals:/);
-assert.match(player,/repairJoinState\(\);[\s\S]*if\(!audio\|\|!node\)/);
+assert.match(player,/deriveGuestPipelineState/);
+assert.match(player,/function applyPipelineState/);
+assert.match(player,/pipelineState/);
+assert.match(player,/lastAudibleOutputAt/);
+assert.match(player,/directOutputAudible/);
+assert.match(player,/binaryFrames/);
+assert.match(player,/pcmFrames/);
+assert.match(player,/isClockLocked/);
+assert.match(html,/id="reason"/);
+assert.match(core,/GUEST_PIPELINE_STATES/);
+assert.match(core,/function deriveGuestPipelineState/);
+for(const state of [
+  'CONNECTING','RELAY_CONNECTED','WAITING_FOR_HOST','HOST_ONLINE','WAITING_FOR_AUDIO',
+  'AUDIO_RECEIVING','DECODER_READY','BUFFERING','CLOCK_LOCKED','PLAYING','NETWORK_LOST',
+  'HOST_STALLED','NO_BINARY_AUDIO','DECODER_FAILED','AUDIOCONTEXT_SUSPENDED',
+  'AUTOPLAY_BLOCKED','BUFFER_UNDERRUN','RESYNCING'
+]) assert.match(core,new RegExp(state),'missing explicit pipeline state '+state);
 
-assert.match(player,/startup scheduler bootstrap/);
+assert.doesNotMatch(player,/setState\(\s*['"]Listening\b/,
+  'legacy handlers must never claim Listening optimistically');
+assert.doesNotMatch(player,/textContent=['"]LISTENING['"]/,
+  'join button must not claim listening before output evidence');
+assert.match(player,/p\.code==='PLAYING'/);
+assert.match(player,/outputAudible:\(lastAudibleOutputAt/);
+assert.match(player,/metrics\.outputPeakDb>-90\|\|metrics\.outputRmsDb>-90/);
 assert.match(player,/AudioContext\.running is the browser's authoritative proof/);
 assert.doesNotMatch(player,/if\s*\(!joined\)\s*\{\s*metrics\.playoutGate='waiting for audio join';\s*return;/);
-
 
 assert.doesNotMatch(player,/decoder\?\.postMessage\(\{type:'reset'\}\)/,
   'ordinary playout reset must not reset the Opus decoder');
 assert.match(worker,/webDecoder\.reset\(\);[\s\S]*webDecoder\.configure\(\{codec:'opus'/,
   'explicit WebCodecs reset must immediately reconfigure the decoder');
 assert.match(worker,/type:'decoder-reset-ready'/);
-
 
 assert.match(player,/numberOfInputs:0/);
 assert.match(player,/workletAlive/);
@@ -122,9 +128,9 @@ assert.match(player,/schedulerErrors/);
 assert.match(player,/function rebuildAudioEngine/);
 assert.match(player,/function scheduleDirectBuffer/);
 assert.match(player,/DIRECT BUFFER playing/);
+assert.match(player,/directAudibleFromPerf/);
 assert.match(player,/sabWriter\.write\(m\.pcm,meta\)/);
 assert.match(worklet,/processQuanta/);
-
 
 assert.match(player,/function startTransportWatchdog/);
 assert.match(player,/relayAge>3500/);
@@ -137,39 +143,28 @@ assert.match(player,/const ok=scheduleDirectBuffer\(m,reason\)/);
   const b=player.indexOf('function shouldForceSafeLocal',a);
   assert.ok(a>=0&&b>a,'scheduleSafeLocal body not found');
   const safeLocalBody=player.slice(a,b);
-  assert.doesNotMatch(
-    safeLocalBody,
-    /sabWriter\.write\(m\.pcm,meta\)/,
-    'safe-local continuity path must not depend on the precision AudioWorklet/SAB scheduler'
-  );
+  assert.doesNotMatch(safeLocalBody,/sabWriter\.write\(m\.pcm,meta\)/,
+    'safe-local continuity path must not depend on the precision AudioWorklet/SAB scheduler');
   assert.match(safeLocalBody,/scheduleDirectBuffer\(m,reason\)/);
 }
-
 
 assert.match(player,/function holdWakeLock/);
 assert.match(player,/navigator\.wakeLock\.request\('screen'\)/);
 assert.match(player,/Wake lock:/);
 
-
 assert.equal((player.match(/function startTransportWatchdog\(/g)||[]).length,1,
   'guest must have exactly one transport watchdog implementation');
-assert.doesNotMatch(
-  player,
-  /ws\.onclose[\s\S]{0,500}resetPlayout\('reconnect'\)/,
-  'transient WebSocket close must preserve queued audio instead of flushing playout'
-);
+assert.doesNotMatch(player,/ws\.onclose[\s\S]{0,500}resetPlayout\('reconnect'\)/,
+  'transient WebSocket close must preserve queued audio instead of flushing playout');
 assert.match(player,/buffered audio is preserved while reconnecting automatically/);
 
-// Continuity-first regression guards.
-
 assert.match(player,/directNextTime=now\+\.700/);
-assert.match(player,/relayAge>3500/);
 assert.match(player,/setInterval\(sendClock,1000\)/);
 assert.match(player,/navigator\.connection\?\.addEventListener\?\.\('change'/);
-assert.match(player,/healthyOutput\?'Listening':'Preparing audio…'/);
-assert.doesNotMatch(player,/else setState\(joined\?'Buffering…':'Host online'/);
-assert.match(player,/backoff=Math\.min\(800/);
+assert.match(player,/backoff=Math\.min\(2500/);
 assert.match(player,/underrunBurstCount>=3/);
 assert.match(player,/forceContinuityOnNextPcm/);
 assert.match(player,/underrun burst continuity/);
 assert.doesNotMatch(player,/setState\('Buffering…'/);
+
+console.log('JLS guest evidence-state regression guards: PASS');
