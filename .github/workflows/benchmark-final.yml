@@ -22,12 +22,19 @@ jobs:
             tools/benchmark/jls_log_analyzer.py \
             tools/benchmark/jls_protocol_contract_check.py
 
-      - name: Five-minute 20-listener matrix
+      - name: Five-minute 20-listener steady-state matrix
         run: |
           python3 tools/benchmark/jls_network_clock_sim.py \
-            --listeners 20 --duration-s 300 --scenario all --mode both \
-            --json-out /tmp/jls-sim.json --md-out /tmp/jls-sim.md
-          cat /tmp/jls-sim.md
+            --listeners 20 --duration-s 300 --scenario all --mode both --outages off \
+            --json-out /tmp/jls-sim-steady.json --md-out /tmp/jls-sim-steady.md
+          cat /tmp/jls-sim-steady.md
+
+      - name: Five-minute 20-listener failure-injected matrix
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py \
+            --listeners 20 --duration-s 300 --scenario all --mode both --outages on \
+            --json-out /tmp/jls-sim-failures.json --md-out /tmp/jls-sim-failures.md
+          cat /tmp/jls-sim-failures.md
 
       - name: Acoustic calibration synthetic self-test
         run: python3 tools/benchmark/jls_calibration_selftest.py
@@ -53,8 +60,10 @@ jobs:
         with:
           name: jls-benchmark-final-simulated
           path: |
-            /tmp/jls-sim.json
-            /tmp/jls-sim.md
+            /tmp/jls-sim-steady.json
+            /tmp/jls-sim-steady.md
+            /tmp/jls-sim-failures.json
+            /tmp/jls-sim-failures.md
             /tmp/jls-e2e.json
             /tmp/jls-e2e.wav
             /tmp/jls-e2e.mp4
