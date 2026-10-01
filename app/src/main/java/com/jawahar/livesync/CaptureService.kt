@@ -549,6 +549,8 @@ class CaptureService : Service() {
 
     private fun effectiveHealth(): CaptureHealth {
         if (projectionStopped) return CaptureHealth.PROJECTION_STOPPED
+        if (sourceHealth == CaptureHealth.ERROR) return CaptureHealth.ERROR
+        if (sourceHealth == CaptureHealth.CAPTURE_STALLED) return CaptureHealth.CAPTURE_STALLED
         if (recoveryRequested.get()) return CaptureHealth.RECOVERING
         if (SystemClock.elapsedRealtimeNanos() < recoveryUntilNs) return CaptureHealth.RECOVERING
 
@@ -781,12 +783,10 @@ class CaptureService : Service() {
         relayClient?.stop()
         relayClient = null
 
-        captureThread?.interrupt()
-        encoderThread?.interrupt()
-        captureThread = null
-        encoderThread = null
-        encoderQueue.clear()
+        val capture = captureThread
+        val encoder = encoderThread
 
+        // Stop AudioRecord first so a blocking read is released before thread shutdown.
         try {
             recorder?.stop()
         } catch (_: Throwable) {
@@ -796,6 +796,22 @@ class CaptureService : Service() {
         } catch (_: Throwable) {
         }
         recorder = null
+
+        capture?.interrupt()
+        encoder?.interrupt()
+        try {
+            capture?.join(750)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        try {
+            encoder?.join(750)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        captureThread = null
+        encoderThread = null
+        encoderQueue.clear()
 
         if (!projectionStopped) {
             try {
