@@ -88,6 +88,14 @@ assert.doesNotMatch(player,/silentOutputForMs>1200\s*&&\s*metrics\.scheduledFram
 
 assert.match(player,/function repairJoinState/);
 assert.match(player,/function diagnosePipeline/);
+assert.match(player,/function applyDiagnosisState/);
+assert.match(player,/applyDiagnosisState\(diagnosis\)/);
+assert.match(player,/RELAY_DISCONNECTED:\['Relay disconnected · retrying','warn'\]/);
+assert.match(player,/NO_HOST_AUDIO:\['No host audio','warn'\]/);
+assert.match(player,/CLOCK_CALIBRATING:\['Calibrating synchronization…','warn'\]/);
+assert.match(player,/SCHEDULER_BLOCKED:\['Recovering output scheduler','warn'\]/);
+assert.match(player,/OUTPUT_SILENT:\['Output silent · recovering','bad'\]/);
+assert.match(player,/ui\.note\.textContent=diagnosis\.code\+'[^']*'/);
 assert.match(player,/JOIN_STATE_STUCK/);
 assert.match(player,/SCHEDULER_BLOCKED/);
 assert.match(player,/OUTPUT_SILENT/);
