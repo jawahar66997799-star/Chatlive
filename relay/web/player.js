@@ -10,9 +10,10 @@ const suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000});
 const roomD=new SlewValue({initial:850,floor:400,ceiling:1000,upPerSec:.25,downPerSec:.15});
 const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
-let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map();
+let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map(),stableOpenTimer=null;
 let lastRelayMessageAt=0,lastBinaryAt=0,transportWatchdogTimer=null;
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null,wakeLock=null;
+let relayStreamState='CONNECTED_NO_HOST',hostCaptureState='';
 let audioEngineRebuilds=0,audioEngineRebuilding=false;
 let directGain=null,directNextTime=null,directSources=new Set();
 let roomDNeedsAuthoritativeSnap=true;
@@ -20,11 +21,19 @@ let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null
 let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAttempt=0;
 let underrunWindowStart=0,underrunBurstCount=0,forceContinuityOnNextPcm=false,lastUnderrunAt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:850,recommendedDelayMs:850,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,underrunBursts:0,continuityRecoveries:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:850,recommendedDelayMs:850,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,underrunBursts:0,continuityRecoveries:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,relayStreamState:'CONNECTED_NO_HOST',hostCaptureState:'',crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
 function note(s){ui.note.textContent=s}
+function showContinuityState(outputHealthy=false,suffix=''){
+  const capture=hostCaptureState?(' · '+hostCaptureState):'';
+  if(relayStreamState==='CONNECTED_NO_HOST'){setState('CONNECTED_NO_HOST · waiting for host','warn');return}
+  if(relayStreamState==='HOST_CONNECTED_NO_AUDIO'){setState('HOST_CONNECTED_NO_AUDIO'+capture,'warn');return}
+  if(relayStreamState==='HOST_STALLED'){setState('HOST_STALLED · no live audio'+capture,'bad');return}
+  if(relayStreamState==='AUDIO_FLOWING'){setState(outputHealthy?('LIVE'+suffix):'AUDIO_FLOWING · preparing output',outputHealthy?'ok':'warn');return}
+  setState(relayStreamState||'Connected','warn');
+}
 
 function repairJoinState(){
   if(!audio||!node||audio.state!=='running')return false;
@@ -47,7 +56,7 @@ function diagnosePipeline(){
   const decodedAudible=metrics.decodedRmsDb>-70;
   const outputAudible=metrics.outputRmsDb>-90||metrics.workletActive||(metrics.directPlayback&&metrics.directSources>0);
 
-  let code='OK',message='Live audio pipeline is healthy.',action='No action needed.';
+  let code='LIVE',message='Live audio pipeline is healthy.',action='No action needed.';
 
   if(!room){
     code='INVALID_LINK';message='Guest room token is missing.';action='Open a fresh guest link from the host.';
@@ -55,8 +64,12 @@ function diagnosePipeline(){
     code='RELAY_RECOVERING';message='Relay transport is reconnecting while buffered audio continues.';action='Keep listening; live-edge recovery is automatic.';
   }else if(!wsOpen){
     code='RELAY_DISCONNECTED';message='Browser is not connected to the relay.';action='Check network access and wait for reconnect.';
-  }else if(!hostOnline){
-    code='HOST_OFFLINE';message='Relay is connected but the host is offline.';action='Start Jawahar Live Sync on the host phone.';
+  }else if(relayStreamState==='CONNECTED_NO_HOST'||!hostOnline){
+    code='CONNECTED_NO_HOST';message='Relay is connected, but no host socket is active.';action='Start or reconnect Jawahar Live Sync on the host phone.';
+  }else if(relayStreamState==='HOST_CONNECTED_NO_AUDIO'){
+    code='HOST_CONNECTED_NO_AUDIO';message='Host is connected, but the relay has not received live audio yet.';action=hostCaptureState?('Host reports '+hostCaptureState+'.'):'Start audible media and verify playback capture on the host.';
+  }else if(relayStreamState==='HOST_STALLED'){
+    code='HOST_STALLED';message='Host socket is alive, but live audio frames stopped arriving.';action=hostCaptureState?('Host reports '+hostCaptureState+'. Automatic live-edge recovery will resume when frames return.'):'Check host capture/media; the guest will resume at the live edge automatically.';
   }else if(metrics.decoder==='opus-unavailable'){
     code='DECODER_UNAVAILABLE';message='Opus decoder could not start.';action='Reload the page or use a current Chrome/Edge/Firefox browser.';
   }else if(metrics.decoder==='starting'){
