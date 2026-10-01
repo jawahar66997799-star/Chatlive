@@ -5,12 +5,15 @@ import {dirname,resolve} from 'node:path';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const web=resolve(here,'..');
-const [html,player,worker,worklet,core]=await Promise.all([
+const [html,player,worker,worklet,core,opusIndex,opusGenerated,opusLicense]=await Promise.all([
   readFile(resolve(web,'index.html'),'utf8'),
   readFile(resolve(web,'player.js'),'utf8'),
   readFile(resolve(web,'decoder-worker.js'),'utf8'),
   readFile(resolve(web,'worklet.js'),'utf8'),
   readFile(resolve(web,'sync-core.mjs'),'utf8'),
+  readFile(resolve(web,'vendor/libopus-wasm/index.js'),'utf8'),
+  readFile(resolve(web,'vendor/libopus-wasm/generated/libopus.generated.mjs'),'utf8'),
+  readFile(resolve(web,'vendor/libopus-wasm/LICENSE.txt'),'utf8'),
 ]);
 
 assert.match(html,/type="module"\s+src="\/player\.js"/);
@@ -28,6 +31,12 @@ assert.match(player,/visibilitychange/);
 assert.match(worker,/JLS1\/64/);
 assert.match(worker,/webcodecs-opus/);
 assert.match(worker,/wasm-opus/);
+assert.match(worker,/\/vendor\/libopus-wasm\/index\.js/);
+assert.doesNotMatch(worker,/cdn\.jsdelivr\.net/);
+assert.doesNotMatch(player,/cdn\.jsdelivr\.net/);
+assert.match(opusIndex,/createDecoder/);
+assert.ok(opusGenerated.length>10000,'vendored generated libopus module unexpectedly small');
+assert.match(opusLicense,/MIT License/);
 assert.match(worklet,/hard-resync/);
 assert.match(worklet,/crossfade/);
 assert.match(worklet,/maxPpm/);
@@ -35,5 +44,6 @@ assert.match(core,/class ClockModel/);
 assert.match(core,/class AdaptiveDelay/);
 assert.match(core,/class PIController/);
 assert.match(core,/class OutputTimeMapper/);
+assert.match(core,/class ServerInstanceTracker/);
 
 console.log('JLS guest asset/protocol smoke tests: PASS');
