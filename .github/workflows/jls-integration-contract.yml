@@ -1,0 +1,73 @@
+name: JLS Cross-Component Contract CI
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - 'protocol/**'
+      - 'app/src/main/java/com/jawahar/livesync/JlsProtocol.kt'
+      - 'app/src/test/java/com/jawahar/livesync/**'
+      - 'relay/**'
+      - '.github/workflows/jls-integration-contract.yml'
+  pull_request:
+    paths:
+      - 'protocol/**'
+      - 'app/src/main/java/com/jawahar/livesync/JlsProtocol.kt'
+      - 'app/src/test/java/com/jawahar/livesync/**'
+      - 'relay/**'
+      - '.github/workflows/jls-integration-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - run: gradle :app:testDebugUnitTest --stacktrace
+
+  relay-contract-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - run: go mod tidy
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go build ./...
+
+  guest-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          node --check relay/web/player.js
+          node --check relay/web/decoder-worker.js
+          node --check relay/web/worklet.js
+          node --check relay/web/sync-core.mjs
+          node relay/web/tests/protocol-vector.test.mjs
+          node relay/web/tests/assets.test.mjs
+          node relay/web/tests/sync-core.test.mjs
