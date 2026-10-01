@@ -27,6 +27,9 @@ var (
 	errBadHeaderLen    = errors.New("invalid audio header length")
 	errBadPayloadLen   = errors.New("payload length mismatch")
 	errPayloadTooLarge = errors.New("payload exceeds configured maximum")
+	errBadReserved      = errors.New("reserved audio header bytes must be zero")
+	errBadFlags         = errors.New("unsupported audio frame flags")
+	errBadAudioMeta     = errors.New("invalid audio metadata")
 )
 
 type AudioFrame struct {
@@ -62,7 +65,25 @@ func parseAudioFrame(data []byte, maxPayload int) (*AudioFrame, error) {
 	if int(data[7]) != audioHeaderLen {
 		return nil, errBadHeaderLen
 	}
+	if data[6] & ^uint8(flagDiscontinuity|flagKeyBoundary) != 0 {
+		return nil, errBadFlags
+	}
+	if data[57] != 0 || binary.BigEndian.Uint32(data[60:64]) != 0 {
+		return nil, errBadReserved
+	}
+	epoch := binary.BigEndian.Uint64(data[8:16])
+	sampleRate := binary.BigEndian.Uint32(data[48:52])
+	frameSamples := binary.BigEndian.Uint16(data[52:54])
+	channels := data[54]
+	codec := data[55]
+	layer := data[56]
+	if epoch == 0 || sampleRate != 48000 || (frameSamples != 480 && frameSamples != 960) || channels != 2 || codec != codecOpus || layer > 1 {
+		return nil, errBadAudioMeta
+	}
 	payloadLen := int(binary.BigEndian.Uint16(data[58:60]))
+	if payloadLen < 1 {
+		return nil, errBadPayloadLen
+	}
 	if payloadLen > maxPayload {
 		return nil, errPayloadTooLarge
 	}
@@ -76,16 +97,16 @@ func parseAudioFrame(data []byte, maxPayload int) (*AudioFrame, error) {
 	return &AudioFrame{
 		Raw:            raw,
 		Flags:          data[6],
-		Epoch:          binary.BigEndian.Uint64(data[8:16]),
+		Epoch:          epoch,
 		Sequence:       binary.BigEndian.Uint64(data[16:24]),
 		CaptureNS:      binary.BigEndian.Uint64(data[24:32]),
 		SamplePosition: binary.BigEndian.Uint64(data[32:40]),
 		RelayIngressNS: binary.BigEndian.Uint64(data[40:48]),
-		SampleRate:     binary.BigEndian.Uint32(data[48:52]),
-		FrameSamples:   binary.BigEndian.Uint16(data[52:54]),
-		Channels:       data[54],
-		Codec:          data[55],
-		Layer:          data[56],
+		SampleRate:     sampleRate,
+		FrameSamples:   frameSamples,
+		Channels:       channels,
+		Codec:          codec,
+		Layer:          layer,
 		PayloadLen:     uint16(payloadLen),
 	}, nil
 }
@@ -165,6 +186,9 @@ func validateHostHello(h *HostHello) error {
 	}
 	if h.FrameSamples != 480 && h.FrameSamples != 960 {
 		return fmt.Errorf("frame_samples must be 480 (10 ms) or 960 (20 ms)")
+	}
+	if h.Layer > 1 {
+		return fmt.Errorf("layer must be 0 or 1")
 	}
 	return nil
 }
