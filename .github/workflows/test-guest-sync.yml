@@ -19,8 +19,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Guest JavaScript syntax
+        run: |
+          node --check relay/web/player.js
+          node --check relay/web/decoder-worker.js
+          node --check relay/web/worklet.js
+          node --check relay/web/sync-core.mjs
       - name: Deterministic guest synchronization tests
-        run: node relay/web/tests/sync-core.test.mjs
+        run: |
+          node relay/web/tests/sync-core.test.mjs
+          node relay/web/tests/assets.test.mjs
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
