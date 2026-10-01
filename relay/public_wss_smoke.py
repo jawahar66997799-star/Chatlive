@@ -99,7 +99,11 @@ async def main():
             binary = 0
             clock_deadline = time.monotonic() + 10
             while time.monotonic() < clock_deadline and clock is None:
-                msg = await asyncio.wait_for(guest.recv(), 2)
+                remaining = clock_deadline - time.monotonic()
+                try:
+                    msg = await asyncio.wait_for(guest.recv(), min(2, max(0.1, remaining)))
+                except TimeoutError:
+                    continue
                 if isinstance(msg, bytes):
                     binary += 1
                 else:
@@ -120,11 +124,18 @@ async def main():
                 await host.send(hdr + payload)
                 await asyncio.sleep(0.02)
 
-            deadline = time.monotonic() + 3
+            deadline = time.monotonic() + 10
             while time.monotonic() < deadline and binary < 1:
-                msg = await asyncio.wait_for(guest.recv(), 1)
+                remaining = deadline - time.monotonic()
+                try:
+                    msg = await asyncio.wait_for(guest.recv(), min(2, max(0.1, remaining)))
+                except TimeoutError:
+                    continue
                 if isinstance(msg, bytes):
                     binary += 1
+
+            if binary < 1:
+                raise RuntimeError("binary audio frame not received before smoke deadline")
 
             print("PUBLIC_WSS_SMOKE", json.dumps({
                 "host_ack": host_ack.get("type") == "hello_host_ack",
