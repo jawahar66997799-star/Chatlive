@@ -220,22 +220,31 @@ function connect(force=false){
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;backoff=100;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState(hostOnline&&joined?'Listening':(hostOnline?'Host online':'Connected'),'ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);startTransportWatchdog()};
+  ws.onopen=()=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState('Connected · checking live state','warn');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);clearTimeout(stableOpenTimer);stableOpenTimer=setTimeout(()=>{if(gen===generation&&ws?.readyState===WebSocket.OPEN)backoff=100},5000);startTransportWatchdog()};
   ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
-  ws.onclose=()=>{
+  ws.onclose=e=>{
     if(gen!==generation)return;
-    clearInterval(clockTimer);clockTimer=null;stopTransportWatchdog();
+    clearInterval(clockTimer);clockTimer=null;clearTimeout(stableOpenTimer);stableOpenTimer=null;stopTransportWatchdog();
     // Continuity-first reconnect: do NOT flush the AudioWorklet/direct queue.
     // Keep lastEpoch/lastSeq so the relay recovery ring can replay only the gap.
     const carryingAudio=joined&&audio?.state==='running'&&(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>80);
-    if(navigator.onLine===false)setState(carryingAudio?'Listening · network recovery':'Network offline',carryingAudio?'ok':'bad');
-    else setState(carryingAudio?'Listening · reconnecting':'Reconnecting…',carryingAudio?'ok':'warn');
-    note('Connection interrupted; buffered audio is preserved while reconnecting automatically.');
+    const tooSlow=String(e?.reason||'').includes('GUEST_TOO_SLOW');
+    if(tooSlow){
+      metrics.faultCode='GUEST_TOO_SLOW';
+      setState('GUEST_TOO_SLOW · rejoining live','warn');
+      note('This listener fell behind the live edge. Stale queued audio was dropped and a fresh live-edge connection is starting.');
+    }else if(navigator.onLine===false){
+      setState(carryingAudio?'RECONNECTING · buffered audio playing':'RECONNECTING · network offline',carryingAudio?'warn':'bad');
+      note('Network interrupted; buffered audio is preserved while reconnecting automatically.');
+    }else{
+      setState(carryingAudio?'RECONNECTING · buffered audio playing':'RECONNECTING','warn');
+      note('Connection interrupted; recovery is automatic and stale backlog will not be replayed.');
+    }
     scheduleReconnect();
   };
   ws.onerror=()=>{};
 }
-function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const d=backoff;backoff=Math.min(800,Math.max(80,Math.round(backoff*1.45)));reconnectTimer=setTimeout(()=>connect(),d)}
+function scheduleReconnect(){clearTimeout(reconnectTimer);metrics.reconnects++;const base=backoff;const d=Math.max(70,Math.round(base*(.65+Math.random()*.7)));backoff=Math.min(2500,Math.max(100,Math.round(backoff*1.6)));reconnectTimer=setTimeout(()=>connect(),d)}
 function stopTransportWatchdog(){clearInterval(transportWatchdogTimer);transportWatchdogTimer=null}
 function startTransportWatchdog(){
   stopTransportWatchdog();
@@ -280,26 +289,25 @@ function onControl(text){
   if(m.type==='state'){
     observeServerInstance(m.server_instance_id);
     hostOnline=!!m.host_online;const tl=m.timeline||{};
+    relayStreamState=String(m.stream_state||(hostOnline?(m.timeline_ready===false?'HOST_CONNECTED_NO_AUDIO':'AUDIO_FLOWING'):'CONNECTED_NO_HOST'));
+    hostCaptureState=String(m.host_capture_state||'');
+    metrics.relayStreamState=relayStreamState;metrics.hostCaptureState=hostCaptureState;
     if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
     const timelineReady=m.timeline_ready!==false&&Number(tl.origin_server_ns)>0;
     if(timelineReady&&tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};else roomTimeline=null;
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;if(roomDNeedsAuthoritativeSnap||roomD.lastMs==null){roomD.reset(ms,performance.now());roomDNeedsAuthoritativeSnap=false}else roomD.setTarget(ms)}
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
-    if(!hostOnline||m.reason==='host_offline'){
+    if(relayStreamState==='CONNECTED_NO_HOST'||!hostOnline||m.reason==='host_offline'){
       resetPlayout('host-offline');
-      setState('Host offline','bad');
+      showContinuityState(false);
+    }else if(relayStreamState==='HOST_STALLED'||relayStreamState==='HOST_CONNECTED_NO_AUDIO'){
+      showContinuityState(false);
     }else if(joined){
-      // A normal state refresh (including adaptive-delay updates) is not a
-      // buffering event. Preserve Listening while the audio pipeline is alive.
-      const healthyOutput =
-        metrics.directPlayback ||
-        metrics.workletActive ||
-        metrics.bufferMs > 40 ||
-        metrics.scheduledFrames > 0;
-      setState(healthyOutput?'Listening':'Preparing audio…',healthyOutput?'ok':'warn');
+      const healthyOutput=metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40;
+      showContinuityState(healthyOutput);
     }else{
-      setState('Host online','ok');
+      showContinuityState(false);
     }
     return;
   }
