@@ -25,7 +25,7 @@ jobs:
       - name: 20-listener simulation matrix
         run: |
           python3 tools/benchmark/jls_network_clock_sim.py \
-            --listeners 20 --duration-s 60 --scenario all --mode both \
+            --listeners 20 --duration-s 300 --scenario all --mode both \
             --json-out /tmp/jls-sim.json --md-out /tmp/jls-sim.md
           cat /tmp/jls-sim.md
 
