@@ -77,7 +77,10 @@ function connect(force=false){
   clearTimeout(reconnectTimer);
   if(!force&&ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;
   if(force&&ws){try{ws.close(4001,'refresh transport')}catch{}}
-  generation++;const gen=generation;setState(ws?'Reconnecting…':'Connecting…','warn');
+  generation++;const gen=generation;
+  clock.reset();pings.clear();
+  metrics.rttMs=null;metrics.clockOffsetMs=null;metrics.clockDriftPpm=null;metrics.clockConfidenceMs=null;
+  setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
   ws.onopen=()=>{if(gen!==generation)return;backoff=250;ui.join.disabled=false;setState(hostOnline?'Host online':'Connected','ok');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,2000)};
