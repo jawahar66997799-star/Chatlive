@@ -20,26 +20,37 @@ jobs:
           ref: youtube-live-sync
           fetch-depth: 0
 
-      - name: Download exact libopus-wasm 0.4.1 browser bundle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Extract exact libopus-wasm 0.4.1 distribution
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/jls-opus package
+          mkdir -p /tmp/jls-opus
+          cd /tmp/jls-opus
+          tgz=$(npm pack --silent libopus-wasm@0.4.1)
+          tar -xzf "$tgz"
+
+          cd "$GITHUB_WORKSPACE"
+          rm -rf relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
           mkdir -p relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
-          URL="https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js"
-          curl --fail --location --retry 4 --retry-all-errors "$URL" -o relay/web/vendor/libopus-wasm/index.js
-          size=$(wc -c < relay/web/vendor/libopus-wasm/index.js)
-          test "$size" -gt 10000
-          if head -c 256 relay/web/vendor/libopus-wasm/index.js | grep -qi '<html'; then
-            echo "Downloaded HTML instead of JavaScript" >&2
-            exit 1
+          cp -a /tmp/jls-opus/package/dist/. relay/web/vendor/libopus-wasm/
+          if [ -f /tmp/jls-opus/package/LICENSE ]; then
+            cp /tmp/jls-opus/package/LICENSE relay/web/vendor/libopus-wasm/LICENSE.txt
           fi
-          cp relay/web/vendor/libopus-wasm/index.js web/vendor/libopus-wasm/index.js
-          sha256sum relay/web/vendor/libopus-wasm/index.js | awk '{print $1}' > relay/web/vendor/libopus-wasm/SHA256.txt
-          cp relay/web/vendor/libopus-wasm/SHA256.txt web/vendor/libopus-wasm/SHA256.txt
-          curl --fail --location --retry 2 "https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/LICENSE" -o relay/web/vendor/libopus-wasm/LICENSE.txt || true
-          if [ -s relay/web/vendor/libopus-wasm/LICENSE.txt ]; then
-            cp relay/web/vendor/libopus-wasm/LICENSE.txt web/vendor/libopus-wasm/LICENSE.txt
-          fi
+
+          test -s relay/web/vendor/libopus-wasm/index.js
+          test -s relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+
+          (
+            cd relay/web/vendor/libopus-wasm
+            find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum
+          ) > relay/web/vendor/libopus-wasm/MANIFEST.sha256
+
+          cp -a relay/web/vendor/libopus-wasm/. web/vendor/libopus-wasm/
 
       - name: Commit vendored decoder
         shell: bash
@@ -47,10 +58,10 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
+          git add -A relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
           if git diff --cached --quiet; then
-            echo "Vendored decoder already matches pinned bundle"
+            echo "Vendored decoder already matches pinned npm package"
             exit 0
           fi
-          git commit -m "guest: vendor pinned libopus-wasm 0.4.1"
+          git commit -m "guest: vendor full libopus-wasm 0.4.1 distribution"
           git push origin HEAD:youtube-live-sync
