@@ -19,13 +19,13 @@ func TestClientIPTrustBoundary(t *testing.T) {
 	}
 }
 
-func TestClientIPFallsBackToFirstForwardedAddress(t *testing.T) {
+func TestClientIPIgnoresGenericForwardedChain(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://example.test/", nil)
 	req.RemoteAddr = "10.0.0.9:43210"
 	req.Header.Set("X-Real-IP", "not-an-ip")
 	req.Header.Set("X-Forwarded-For", "198.51.100.12, 192.0.2.5")
 
-	if got := clientIP(req, true); got != "198.51.100.12" {
-		t.Fatalf("forwarded fallback mismatch: %q", got)
+	if got := clientIP(req, true); got != "10.0.0.9" {
+		t.Fatalf("generic forwarded chain should not affect client IP: %q", got)
 	}
 }
