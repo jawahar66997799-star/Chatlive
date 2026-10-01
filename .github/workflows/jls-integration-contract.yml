@@ -8,6 +8,8 @@ on:
       - 'app/src/main/java/com/jawahar/livesync/JlsProtocol.kt'
       - 'app/src/test/java/com/jawahar/livesync/**'
       - 'relay/**'
+      - 'web/**'
+      - 'main.go'
       - '.github/workflows/jls-integration-contract.yml'
   pull_request:
     paths:
@@ -15,6 +17,8 @@ on:
       - 'app/src/main/java/com/jawahar/livesync/JlsProtocol.kt'
       - 'app/src/test/java/com/jawahar/livesync/**'
       - 'relay/**'
+      - 'web/**'
+      - 'main.go'
       - '.github/workflows/jls-integration-contract.yml'
   workflow_dispatch:
 
@@ -63,6 +67,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify deployed root guest assets mirror canonical relay assets
+        run: |
+          cmp relay/web/index.html web/index.html
+          cmp relay/web/player.js web/player.js
+          cmp relay/web/decoder-worker.js web/decoder-worker.js
+          cmp relay/web/worklet.js web/worklet.js
+          cmp relay/web/sync-core.mjs web/sync-core.mjs
       - run: |
           node --input-type=module --check < relay/web/player.js
           node --check relay/web/decoder-worker.js
