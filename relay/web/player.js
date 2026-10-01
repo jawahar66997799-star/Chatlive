@@ -7,7 +7,7 @@ ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'p
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
-const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
+const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:25,downPerSec:6});
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
@@ -159,7 +159,7 @@ function onDecoded(m){
   if(hostOnline&&audio.state==='running')setState('Listening','ok');
 }
 
-function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0&&Number.isFinite(b)&&b>0)return Math.max(o,b);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
+function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
 function sampleOutputClock(){
   if(!audio)return;
   try{if(typeof audio.getOutputTimestamp==='function'){const t=audio.getOutputTimestamp();if(Number.isFinite(t?.performanceTime)&&t.performanceTime>0&&Number.isFinite(t?.contextTime))outputMap.add({performanceTimeMs:t.performanceTime,contextTimeSec:t.contextTime})}}catch{}
