@@ -53,8 +53,8 @@ class CaptureService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val SAMPLE_RATE = 48_000
         private const val CHANNELS = 2
-        private const val FRAME_MS = 20
-        private const val TARGET_BITRATE = 144_000
+        private val FRAME_MS = if (BuildConfig.OPUS_FRAME_MS == 10) 10 else 20
+        private val TARGET_BITRATE = BuildConfig.OPUS_BITRATE_BPS.coerceIn(64_000, 192_000)
         private val SOURCE_PACKAGES = listOf(
             "com.google.android.youtube",
             "com.google.android.apps.youtube.music"
@@ -626,7 +626,7 @@ class CaptureService : Service() {
             logWriter?.appendLine("# android=" + Build.VERSION.RELEASE + " api=" + Build.VERSION.SDK_INT + " build=" + Build.DISPLAY)
             logWriter?.appendLine("# youtube=" + packageVersion("com.google.android.youtube"))
             logWriter?.appendLine("# youtube_music=" + packageVersion("com.google.android.apps.youtube.music"))
-            logWriter?.appendLine("# protocol=" + JlsProtocol.VERSION + " codec=opus sample_rate=48000 channels=2 frame_ms=20 target_bitrate=144000 dtx=false fec=false")
+            logWriter?.appendLine("# protocol=" + JlsProtocol.VERSION + " codec=opus sample_rate=48000 channels=2 frame_ms=" + FRAME_MS + " target_bitrate=" + TARGET_BITRATE + " dtx=false fec=false")
             logWriter?.appendLine("# room=" + relayConfig.room)
             logWriter?.appendLine("elapsed_ms,health,capture_health,relay_state,rms_dbfs,peak_dbfs,active_playback,frames_captured,read_faults,packets_encoded,bytes_uploaded,bitrate_bps,encode_us,relay_rtt_ms,reconnects,send_buffer_depth,dropped_frames,projection_stops,thermal_status,battery_pct")
             logWriter?.flush()
