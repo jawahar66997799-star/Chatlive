@@ -14,6 +14,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	wsPingInterval = 8 * time.Second
+	wsPeerTimeout  = 24 * time.Second
+	wsWriteTimeout = 2 * time.Second
+	staleWriteGuard = 50 * time.Millisecond
+)
+
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  16 * 1024,
 	WriteBufferSize: 16 * 1024,
@@ -60,6 +67,36 @@ func clientIP(r *http.Request, trustProxyHeaders bool) string {
 		return ip
 	}
 	return r.RemoteAddr
+}
+
+func armPeerLiveness(c *websocket.Conn) {
+	refresh := func() { _ = c.SetReadDeadline(time.Now().Add(wsPeerTimeout)) }
+	refresh()
+	defaultPing := c.PingHandler()
+	c.SetPongHandler(func(string) error {
+		refresh()
+		return nil
+	})
+	c.SetPingHandler(func(appData string) error {
+		refresh()
+		return defaultPing(appData)
+	})
+}
+
+func hostPingLoop(c *websocket.Conn, done <-chan struct{}) {
+	t := time.NewTicker(wsPingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			if err := c.WriteControl(websocket.PingMessage, []byte("jls-host"), time.Now().Add(wsWriteTimeout)); err != nil {
+				_ = c.Close()
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) acquireIP(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -116,7 +153,11 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 	defer s.room.endHost(generation)
 	s.metrics.hostConnections.Add(1)
 
-	_ = c.SetReadDeadline(time.Time{})
+	armPeerLiveness(c)
+	hostPingDone := make(chan struct{})
+	defer close(hostPingDone)
+	go hostPingLoop(c, hostPingDone)
+
 	ack := map[string]any{
 		"type":                  "hello_host_ack",
 		"v":                     protocolVersion,
@@ -143,6 +184,7 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		_ = c.SetReadDeadline(time.Now().Add(wsPeerTimeout))
 		if time.Since(rateWindow) >= time.Second {
 			rateWindow = time.Now()
 			rateCount = 0
@@ -186,7 +228,8 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "host_state":
-				// State is telemetry only. Epoch/sequence/timeline are relay-authoritative.
+				// Capture health is advisory only; it never changes epoch/sequence/timeline.
+				s.room.updateHostState(m.State)
 			default:
 				s.metrics.malformedMessages.Add(1)
 			}
@@ -224,7 +267,7 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 	g := &guestConn{
 		id:   s.guestID.Add(1),
 		conn: c,
-		send: make(chan outbound, 200),
+		send: make(chan outbound, 64),
 	}
 	defer func() {
 		g.closed.Store(true)
@@ -233,6 +276,7 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 	}()
 
 	c.SetReadLimit(64 * 1024)
+	armPeerLiveness(c)
 	var resumeEpoch, resumeSeq uint64
 	var hasResume bool
 	if ev, err := strconv.ParseUint(r.URL.Query().Get("epoch"), 10, 64); err == nil && ev != 0 {
@@ -257,6 +301,7 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 		if err != nil {
 			return
 		}
+		_ = c.SetReadDeadline(time.Now().Add(wsPeerTimeout))
 		if time.Since(rateWindow) >= time.Second {
 			rateWindow = time.Now()
 			rateCount = 0
@@ -309,12 +354,16 @@ func (s *Server) guestWriter(g *guestConn) {
 			if g.closed.Load() {
 				return
 			}
-			_ = g.conn.SetWriteDeadline(time.Now().Add(4 * time.Second))
+			_ = g.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 			var err error
 			switch o.kind {
 			case outboundText:
 				err = g.conn.WriteMessage(websocket.TextMessage, o.data)
 			case outboundBinary:
+				if o.deadlineNS > 0 && serverNS()+uint64(staleWriteGuard.Nanoseconds()) >= o.deadlineNS {
+					s.metrics.staleFanoutDrops.Add(1)
+					continue
+				}
 				err = g.conn.WriteMessage(websocket.BinaryMessage, o.data)
 			case outboundClock:
 				// T2 is stamped as late as practical: immediately before the socket write.
@@ -340,8 +389,8 @@ func (s *Server) guestWriter(g *guestConn) {
 			if g.closed.Load() {
 				return
 			}
-			_ = g.conn.SetWriteDeadline(time.Now().Add(4 * time.Second))
-			if err := g.conn.WriteControl(websocket.PingMessage, []byte("jls"), time.Now().Add(4*time.Second)); err != nil {
+			_ = g.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := g.conn.WriteControl(websocket.PingMessage, []byte("jls"), time.Now().Add(wsWriteTimeout)); err != nil {
 				g.closed.Store(true)
 				_ = g.conn.Close()
 				return
