@@ -108,6 +108,7 @@ jobs:
 
           cat > /tmp/jls-cyclonedx.init.gradle <<'EOF'
           import org.cyclonedx.gradle.CyclonedxPlugin
+          import org.cyclonedx.gradle.CyclonedxDirectTask
           initscript {
             repositories { gradlePluginPortal() }
             dependencies {
@@ -117,11 +118,19 @@ jobs:
           rootProject {
             apply plugin: CyclonedxPlugin
           }
+          gradle.projectsEvaluated {
+            rootProject.project(':app').tasks.named('cyclonedxDirectBom', CyclonedxDirectTask) {
+              includeConfigs = ['releaseRuntimeClasspath']
+              skipConfigs = []
+              testConfigs = []
+              jsonOutput = project.layout.buildDirectory.file('reports/cyclonedx/jls-release-runtime-bom.json')
+            }
+          }
           EOF
 
-          gradle cyclonedxBom --init-script /tmp/jls-cyclonedx.init.gradle --stacktrace
-          test -s build/reports/cyclonedx/bom.json
-          cp build/reports/cyclonedx/bom.json release-audit/android.cdx.json
+          gradle :app:cyclonedxDirectBom --init-script /tmp/jls-cyclonedx.init.gradle --stacktrace
+          test -s app/build/reports/cyclonedx/jls-release-runtime-bom.json
+          cp app/build/reports/cyclonedx/jls-release-runtime-bom.json release-audit/android.cdx.json
 
           gradle :app:dependencies --configuration debugRuntimeClasspath > release-audit/android-debug-runtime-dependencies.txt
           gradle :app:dependencies --configuration releaseRuntimeClasspath > release-audit/android-release-runtime-dependencies.txt
@@ -146,7 +155,7 @@ jobs:
         run: |
           set +e
 
-          "$(go env GOPATH)/bin/osv-scanner" scan source             -L build/reports/cyclonedx/bom.json             --format=json             --output-file=release-audit/android-osv.json
+          "$(go env GOPATH)/bin/osv-scanner" scan source             -L app/build/reports/cyclonedx/jls-release-runtime-bom.json             --format=json             --output-file=release-audit/android-osv.json
           android_rc=$?
 
           "$(go env GOPATH)/bin/osv-scanner" scan source             -L relay/go.mod             --format=json             --output-file=release-audit/go-osv.json
