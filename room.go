@@ -330,17 +330,8 @@ func (r *Room) updateListenerStats(guestID uint64, m GuestControl, nowNS uint64)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var exists bool
-	for g := range r.guests {
-		if g.id == guestID {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		return
-	}
-
+	// guestID originates from the live authenticated guest connection.
+	// removeGuest deletes its stat on teardown, so no O(N) guest-map scan is needed here.
 	minMS := float64(r.delayMinNS) / 1e6
 	maxMS := float64(r.delayMaxNS) / 1e6
 	rec := math.Max(minMS, math.Min(maxMS, m.RecommendedDelayMS))
