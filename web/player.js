@@ -29,8 +29,10 @@ Object.assign(metrics,{pipelineState:'CONNECTING',pipelineLabel:'CONNECTING',pip
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){
-  // Legacy event hints may still call this helper, but an optimistic Listening
-  // label is never allowed to outrank the evidence-driven pipeline state.
+  // Older event handlers may still emit hints, but once the canonical pipeline
+  // exists they are diagnostics only and can never replace the truthful state.
+  metrics.legacyStateHint=String(s||'');
+  if(currentPipeline){applyPipelineState();return;}
   if(/^Listening\b/i.test(String(s||'')))return;
   ui.state.textContent=s;ui.dot.className='dot '+k;
 }
