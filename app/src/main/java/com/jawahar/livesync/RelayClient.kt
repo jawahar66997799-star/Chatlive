@@ -201,9 +201,6 @@ class RelayClient(
         val requestBuilder = Request.Builder()
             .url(config.hostWsUrl())
             .header("X-JLS-Protocol", JlsProtocol.VERSION.toString())
-        if (config.hostToken.isNotBlank()) {
-            requestBuilder.header("Authorization", "Bearer " + config.hostToken)
-        }
         client.newWebSocket(requestBuilder.build(), wsListener)
     }
 
