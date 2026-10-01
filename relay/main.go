@@ -228,7 +228,13 @@ func (s *Server) metricsHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) clockHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.room.authGuest(r.URL.Query().Get("token")) {
+		s.metrics.authFailures.Add(1)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	t1 := serverNS()
+	s.metrics.clockRequests.Add(1)
 	t0 := r.URL.Query().Get("t0")
 	t2 := serverNS()
 	w.Header().Set("content-type", "application/json")
