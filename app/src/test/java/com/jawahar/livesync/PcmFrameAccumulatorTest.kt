@@ -40,6 +40,20 @@ class PcmFrameAccumulatorTest {
         assertEquals(1920L, accumulator.samplePosition())
     }
 
+    @Test
+    fun recoveryGapAdvancesLiveTimeline() {
+        val accumulator = PcmFrameAccumulator(sampleRate = 48_000, channels = 2, frameMs = 20)
+        val bytes = ByteArray(960 * 2 * 2)
+        val out = mutableListOf<PcmFrame>()
+
+        accumulator.push(bytes, bytes.size, 1_020_000_000L) { out += it }
+        accumulator.advanceGapNanos(3_000_000_000L)
+        accumulator.push(bytes, bytes.size, 4_040_000_000L) { out += it }
+
+        assertEquals(2, out.size)
+        assertEquals(144_960L, out[1].samplePosition)
+    }
+
     private fun writeLe16(target: ByteArray, offset: Int, value: Short) {
         val v = value.toInt()
         target[offset] = (v and 0xFF).toByte()
