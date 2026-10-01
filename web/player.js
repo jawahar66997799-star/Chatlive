@@ -115,7 +115,8 @@ function onControl(text){
     hostOnline=!!m.host_online;const tl=m.timeline||{};
     if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
-    if(tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};
+    const timelineReady=m.timeline_ready!==false&&Number(tl.origin_server_ns)>0;
+    if(timelineReady&&tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};else roomTimeline=null;
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;roomD.setTarget(ms);if(roomD.lastMs==null){roomD.current=roomD.target;roomD.lastMs=performance.now()}}
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline||m.reason==='host_offline'){resetPlayout('host-offline');setState('Host offline','bad')}else setState(joined?'Buffering…':'Host online',joined?'warn':'ok');
