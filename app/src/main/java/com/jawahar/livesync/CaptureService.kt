@@ -117,14 +117,7 @@ class CaptureService : Service() {
 
     private val playbackCallback = object : AudioManager.AudioPlaybackCallback() {
         override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
-            activePlayback = configs.orEmpty().any {
-                when (it.audioAttributes.usage) {
-                    AudioAttributes.USAGE_MEDIA,
-                    AudioAttributes.USAGE_GAME,
-                    AudioAttributes.USAGE_UNKNOWN -> true
-                    else -> false
-                }
-            }
+            activePlayback = hasMediaPlayback(configs.orEmpty())
         }
     }
 
@@ -405,11 +398,12 @@ class CaptureService : Service() {
             }
 
             if (now - lastReportNs >= 1_000_000_000L) {
+                refreshPlaybackActivity()
                 val detail = when (sourceHealth) {
                     CaptureHealth.CAPTURE_OK -> "Digital playback PCM verified."
                     CaptureHealth.SOURCE_SILENT -> "Captured PCM is momentarily silent."
-                    CaptureHealth.SOURCE_PAUSED -> "No active media playback detected."
-                    CaptureHealth.CAPTURE_BLOCKED_SUSPECTED -> "Media playback appears active, but captured PCM remains digital silence."
+                    CaptureHealth.SOURCE_PAUSED -> "Captured PCM is silent and Android reports no active system media playback; target pause is likely but not package-identifiable through this public callback."
+                    CaptureHealth.CAPTURE_BLOCKED_SUSPECTED -> "System media playback appears active, but permitted YouTube/YT Music capture PCM remains digital silence; source capture policy or source-side silence is suspected."
                     else -> sourceHealth.name
                 }
                 val snapshot = publishSnapshot(detail)
@@ -755,6 +749,25 @@ class CaptureService : Service() {
                 logWriter?.flush()
             } catch (_: Throwable) {
             }
+        }
+    }
+
+    private fun hasMediaPlayback(configs: List<AudioPlaybackConfiguration>): Boolean {
+        return configs.any {
+            when (it.audioAttributes.usage) {
+                AudioAttributes.USAGE_MEDIA,
+                AudioAttributes.USAGE_GAME,
+                AudioAttributes.USAGE_UNKNOWN -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun refreshPlaybackActivity() {
+        activePlayback = try {
+            hasMediaPlayback(audioManager.activePlaybackConfigurations)
+        } catch (_: Throwable) {
+            activePlayback
         }
     }
 
