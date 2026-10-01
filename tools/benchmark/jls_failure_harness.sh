@@ -70,8 +70,21 @@ PY
       "${ADB[@]}" shell svc wifi enable
       echo "Reconnect to a different AP/VPN/NAT if a guaranteed public IP change is required."
       ;;
-    home)
+    home|host-background|guest-background)
       "${ADB[@]}" shell input keyevent KEYCODE_HOME
+      echo "Background injection sent. Ensure the intended host/guest app was foreground immediately before this command."
+      ;;
+    host-reconnect)
+      "${ADB[@]}" shell svc wifi disable
+      sleep 1
+      "${ADB[@]}" shell svc wifi enable
+      echo "Host transport reconnect trigger injected. Verify epoch/sequence/live-edge behavior in telemetry."
+      ;;
+    guest-reconnect)
+      "${ADB[@]}" shell svc wifi disable
+      sleep 1
+      "${ADB[@]}" shell svc wifi enable
+      echo "Guest transport reconnect trigger injected. Verify decoder/ring/clock generation reset and no stale backlog replay."
       ;;
     lock)
       "${ADB[@]}" shell input keyevent KEYCODE_POWER
@@ -124,7 +137,7 @@ case "$MODE" in
     cat <<EOF
 Usage:
   $0 netem {loss1|loss5|loss10|jitter50|jitter200|outage500|outage1000|outage3000|clear}
-  $0 android {wifi500|wifi1000|wifi3000|wifi-to-cell|ip-change|home|lock|youtube-pause|youtube-resume|youtube-next|youtube-seek|playlist-switch|ad-transition}
+  $0 android {wifi500|wifi1000|wifi3000|wifi-to-cell|ip-change|home|host-background|guest-background|host-reconnect|guest-reconnect|lock|youtube-pause|youtube-resume|youtube-next|youtube-seek|playlist-switch|ad-transition}
   $0 relay restart-local
 EOF
     exit 2
