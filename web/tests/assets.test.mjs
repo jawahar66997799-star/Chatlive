@@ -143,3 +143,14 @@ assert.match(player,/directNextTime=now\+\.300/);
 assert.match(player,/function holdWakeLock/);
 assert.match(player,/navigator\.wakeLock\.request\('screen'\)/);
 assert.match(player,/Wake lock:/);
+
+
+assert.equal((player.match(/function startTransportWatchdog\(/g)||[]).length,1,
+  'guest must have exactly one transport watchdog implementation');
+assert.doesNotMatch(
+  player,
+  /ws\.onclose[\s\S]{0,500}resetPlayout\('reconnect'\)/,
+  'transient WebSocket close must preserve queued audio instead of flushing playout'
+);
+assert.match(player,/buffered audio is preserved while reconnecting automatically/);
+assert.match(player,/backoff=Math\.min\(2000/);
