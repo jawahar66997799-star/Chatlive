@@ -1,0 +1,51 @@
+name: JLS Benchmark CI
+
+on:
+  push:
+    branches:
+      - workstream-4-benchmarking
+  workflow_dispatch:
+
+jobs:
+  validate-benchmark-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax
+        run: python3 -m py_compile tools/benchmark/jls_network_clock_sim.py tools/benchmark/jls_calibration.py tools/benchmark/jls_generate_e2e_signal.py tools/benchmark/jls_log_analyzer.py
+
+      - name: 20-listener smoke simulation
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py \
+            --listeners 20 --duration-s 10 --scenario mixed --mode both \
+            --json-out /tmp/jls-sim.json --md-out /tmp/jls-sim.md
+          test -s /tmp/jls-sim.json
+          test -s /tmp/jls-sim.md
+
+      - name: Generate calibration chirps
+        run: |
+          python3 tools/benchmark/jls_calibration.py generate \
+            --devices 3 --out-dir /tmp/jls-chirps
+          test -s /tmp/jls-chirps/manifest.json
+          test -s /tmp/jls-chirps/chirp_device_00.wav
+
+      - name: Generate end-to-end reference signal
+        run: |
+          python3 tools/benchmark/jls_generate_e2e_signal.py \
+            --duration-s 12 --out /tmp/jls-e2e.wav --manifest /tmp/jls-e2e.json
+          test -s /tmp/jls-e2e.wav
+          test -s /tmp/jls-e2e.json
+
+      - name: Shell syntax
+        run: bash -n tools/benchmark/jls_failure_harness.sh
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Build relay and synthetic probe
+        working-directory: relay
+        run: |
+          go test ./...
+          go build ./cmd/jlsprobe
