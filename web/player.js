@@ -304,7 +304,7 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     for(let i=0;i<m.frames;i++){l[i]=m.pcm[i*2]||0;r[i]=m.pcm[i*2+1]||0}
     const src=audio.createBufferSource();src.buffer=buffer;src.connect(ensureDirectGain());
     const now=audio.currentTime;
-    if(!Number.isFinite(directNextTime)||directNextTime<now+.050)directNextTime=now+.140;
+    if(!Number.isFinite(directNextTime)||directNextTime<now+.080)directNextTime=now+.300;
     const start=directNextTime;directNextTime+=m.frames/sourceRate;
     directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
