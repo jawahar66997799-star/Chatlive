@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-//go:embed relay/web/*
+//go:embed web/*
 var webFS embed.FS
 
 var processStart = time.Now()
@@ -194,7 +194,7 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func serveWeb(w http.ResponseWriter, r *http.Request) {
-	sub, _ := fs.Sub(webFS, "relay/web")
+	sub, _ := fs.Sub(webFS, "web")
 	name := "index.html"
 	contentType := "text/html; charset=utf-8"
 	switch r.URL.Path {
