@@ -34,8 +34,9 @@ var wsUpgrader = websocket.Upgrader{
 func clientIP(r *http.Request) string {
 	// Railway terminates TLS at a trusted reverse proxy and supplies X-Forwarded-For.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-			return first
+		parts := strings.Split(xff, ",")
+		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+			return last
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -117,10 +118,21 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 	s.room.broadcastState("host_online")
 	log.Printf("host connected ip=%s epoch=%d resume_after=%d", ip, hello.Epoch, resumeAfter)
 
+	rateWindow := time.Now()
+	rateCount := 0
 	for {
 		mt, data, err := c.ReadMessage()
 		t1 := serverNS()
 		if err != nil {
+			return
+		}
+		if time.Since(rateWindow) >= time.Second {
+			rateWindow = time.Now()
+			rateCount = 0
+		}
+		rateCount++
+		if rateCount > 220 {
+			writeClose(c, 1008, "host message rate exceeded")
 			return
 		}
 		switch mt {
@@ -220,10 +232,21 @@ func (s *Server) serveGuestWS(w http.ResponseWriter, r *http.Request, token stri
 
 	log.Printf("guest connected id=%d ip=%s resume=%t", g.id, ip, hasResume)
 
+	rateWindow := time.Now()
+	rateCount := 0
 	for {
 		mt, data, err := c.ReadMessage()
 		t1 := serverNS()
 		if err != nil {
+			return
+		}
+		if time.Since(rateWindow) >= time.Second {
+			rateWindow = time.Now()
+			rateCount = 0
+		}
+		rateCount++
+		if rateCount > 40 {
+			writeClose(c, 1008, "guest control rate exceeded")
 			return
 		}
 		if mt != websocket.TextMessage {
