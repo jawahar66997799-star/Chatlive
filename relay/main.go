@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,8 +21,17 @@ import (
 var webFS embed.FS
 
 var processStart = time.Now()
+var serverInstanceID = mustServerInstanceID()
 
 func serverNS() uint64 { return uint64(time.Since(processStart).Nanoseconds()) }
+
+func mustServerInstanceID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("unable to create server instance id: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
 
 type Config struct {
 	Port         string
@@ -31,10 +43,17 @@ type Config struct {
 	MaxMessage   int64
 	MaxRingBytes int
 	RingDuration time.Duration
-	CommonDelay  time.Duration
-	JoinGuard    time.Duration
-	IdleTTL      time.Duration
-	MaxIPConns   int
+	CommonDelay         time.Duration
+	CommonDelayMin      time.Duration
+	CommonDelayMax      time.Duration
+	DelayStatsTTL       time.Duration
+	DelayUpdateInterval time.Duration
+	DelayUpPerSec       time.Duration
+	DelayDownPerSec     time.Duration
+	JoinGuard           time.Duration
+	IdleTTL             time.Duration
+	MaxIPConns          int
+	MetricsToken        string
 }
 
 func loadConfig() (Config, error) {
@@ -48,16 +67,33 @@ func loadConfig() (Config, error) {
 		MaxMessage:   int64(envInt("JLS_MAX_MESSAGE_BYTES", 32768)),
 		MaxRingBytes: envInt("JLS_MAX_RING_BYTES", 2*1024*1024),
 		RingDuration: time.Duration(envInt("JLS_RING_MS", 5000)) * time.Millisecond,
-		CommonDelay:  time.Duration(envInt("JLS_COMMON_DELAY_MS", 400)) * time.Millisecond,
-		JoinGuard:    time.Duration(envInt("JLS_JOIN_GUARD_MS", 150)) * time.Millisecond,
-		IdleTTL:      time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
-		MaxIPConns:   envInt("JLS_MAX_IP_CONNECTIONS", 32),
+		CommonDelay:         time.Duration(envInt("JLS_COMMON_DELAY_MS", 400)) * time.Millisecond,
+		CommonDelayMin:      time.Duration(envInt("JLS_COMMON_DELAY_MIN_MS", 150)) * time.Millisecond,
+		CommonDelayMax:      time.Duration(envInt("JLS_COMMON_DELAY_MAX_MS", 1000)) * time.Millisecond,
+		DelayStatsTTL:       time.Duration(envInt("JLS_DELAY_STATS_TTL_MS", 10000)) * time.Millisecond,
+		DelayUpdateInterval: time.Duration(envInt("JLS_DELAY_UPDATE_MS", 1000)) * time.Millisecond,
+		DelayUpPerSec:       time.Duration(envInt("JLS_DELAY_UP_MS_PER_SEC", 60)) * time.Millisecond,
+		DelayDownPerSec:     time.Duration(envInt("JLS_DELAY_DOWN_MS_PER_SEC", 10)) * time.Millisecond,
+		JoinGuard:           time.Duration(envInt("JLS_JOIN_GUARD_MS", 150)) * time.Millisecond,
+		IdleTTL:             time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
+		MaxIPConns:          envInt("JLS_MAX_IP_CONNECTIONS", 32),
+		MetricsToken:        os.Getenv("JLS_METRICS_TOKEN"),
 	}
 	if len(cfg.RoomID) < 32 || len(cfg.HostSecret) < 32 || len(cfg.GuestToken) < 22 {
 		return Config{}, fmt.Errorf("JLS_ROOM_ID, JLS_HOST_SECRET, and JLS_GUEST_TOKEN must be configured with >=128-bit unguessable values")
 	}
 	if cfg.MaxGuests < 1 || cfg.MaxGuests > 5000 {
 		return Config{}, fmt.Errorf("JLS_MAX_GUESTS outside safe range")
+	}
+	if cfg.CommonDelayMin <= 0 || cfg.CommonDelayMax < cfg.CommonDelayMin ||
+		cfg.CommonDelay < cfg.CommonDelayMin || cfg.CommonDelay > cfg.CommonDelayMax {
+		return Config{}, fmt.Errorf("invalid common-delay bounds")
+	}
+	if cfg.DelayStatsTTL <= 0 || cfg.DelayUpdateInterval <= 0 || cfg.DelayUpPerSec <= 0 || cfg.DelayDownPerSec <= 0 {
+		return Config{}, fmt.Errorf("invalid adaptive-delay controller settings")
+	}
+	if cfg.MetricsToken != "" && len(cfg.MetricsToken) < 32 {
+		return Config{}, fmt.Errorf("JLS_METRICS_TOKEN must be empty or at least 32 characters")
 	}
 	return cfg, nil
 }
@@ -178,7 +214,7 @@ func main() {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "protocol": protocolVersion, "server_ns": serverNS()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "protocol": protocolVersion, "server_instance_id": serverInstanceID, "server_ns": serverNS()})
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -216,7 +252,15 @@ func serveWeb(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-func (s *Server) metricsHandler(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.MetricsToken != "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		const prefix = "Bearer "
+		if !strings.HasPrefix(auth, prefix) || !secureEqual(strings.TrimSpace(strings.TrimPrefix(auth, prefix)), s.cfg.MetricsToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	w.Header().Set("content-type", "text/plain; version=0.0.4")
 	fmt.Fprintf(w, "jls_host_connections_total %d\n", s.metrics.hostConnections.Load())
 	fmt.Fprintf(w, "jls_guest_joins_total %d\n", s.metrics.guestJoins.Load())
@@ -230,6 +274,7 @@ func (s *Server) metricsHandler(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "jls_clock_requests_total %d\n", s.metrics.clockRequests.Load())
 	fmt.Fprintf(w, "jls_epoch_changes_total %d\n", s.metrics.epochChanges.Load())
 	fmt.Fprintf(w, "jls_auth_failures_total %d\n", s.metrics.authFailures.Load())
+	fmt.Fprintf(w, "jls_common_delay_ms %.3f\n", s.room.commonDelayMilliseconds())
 }
 
 func (s *Server) clockHTTP(w http.ResponseWriter, r *http.Request) {
@@ -243,5 +288,5 @@ func (s *Server) clockHTTP(w http.ResponseWriter, r *http.Request) {
 	t0 := r.URL.Query().Get("t0")
 	t2 := serverNS()
 	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"type": "clock_resp", "v": protocolVersion, "t0_guest_ns": t0, "t1_server_ns": t1, "t2_server_ns": t2})
+	_ = json.NewEncoder(w).Encode(map[string]any{"type": "clock_resp", "v": protocolVersion, "server_instance_id": serverInstanceID, "t0_guest_ns": t0, "t1_server_ns": t1, "t2_server_ns": t2})
 }
