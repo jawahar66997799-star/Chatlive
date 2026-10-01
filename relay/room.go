@@ -183,8 +183,9 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 		}
 	}
 
+	firstFrame := !r.haveFrame
 	f.stampRelayIngress(serverNS)
-	if !r.haveFrame {
+	if firstFrame {
 		r.originServerNS = serverNS
 		r.originSample = f.SamplePosition
 	}
@@ -205,6 +206,14 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 
 	r.metrics.audioFrames.Add(1)
 	r.metrics.audioBytes.Add(uint64(len(f.Raw)))
+
+	// Guests that connected before the first media frame initially know only
+	// that the host is online. Publish the real sample/server anchor before
+	// the first binary frame so every guest schedules against the same epoch
+	// timeline instead of a zero/uninitialized origin.
+	if firstFrame {
+		r.broadcastStateLocked("timeline_started")
+	}
 
 	for g := range r.guests {
 		if g.closed.Load() {
@@ -349,6 +358,7 @@ func (r *Room) stateLocked(nowNS uint64, resumeEpoch, resumeSeq uint64, hasResum
 		"type":                    "state",
 		"v":                       protocolVersion,
 		"host_online":             r.hostOnline,
+		"timeline_ready":          r.haveFrame,
 		"room_id":                 r.id,
 		"epoch":                   r.epoch,
 		"earliest_seq":            earliest,
