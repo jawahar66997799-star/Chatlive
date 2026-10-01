@@ -437,7 +437,9 @@ def run_scenario(scenario: str, count: int, duration_s: float, seed: int) -> Dic
             previous_online[l.lid] = desired_online
             l.online = desired_online
             if not l.online:
-                l.offline_duration_ms += FRAME_MS
+                # Deliberate membership removal is not an audio continuity failure.
+                if not (scenario == "poor_leave_disconnect" and l.role == "poor_member"):
+                    l.offline_duration_ms += FRAME_MS
                 l.in_underrun = False
                 continue
 
@@ -594,6 +596,21 @@ def markdown(results: List[Dict[str, object]]) -> str:
     lines += [
         "",
         "* Acoustic skew is a sensitivity simulation using explicit residual clock/output-path assumptions. It is not a microphone result.",
+        "",
+        "## Transition diagnostics",
+        "",
+        "| Scenario | D last60 range | Direction changes | Join target delta | Expired stats | First expiry | Disconnect removals | Restart D pre -> post | Resume guard p05-ish note |",
+        "|---|---:|---:|---:|---:|---:|---:|---|---|",
+    ]
+    for r in results:
+        if r["scenario"] not in {"one_poor_joins","several_poor_join","poor_leave_disconnect","poor_stats_stale","server_restart","short_outage","reconnect_live_edge","good_to_poor","clean_to_j200","packet_loss"}:
+            continue
+        join_delta = "—" if r["join_target_delta_ms"] is None else f"{r['join_target_delta_ms']:.1f} ms"
+        expiry = "—" if r["first_expired_stat_ms"] is None else f"{r['first_expired_stat_ms']/1000:.1f} s"
+        restart = "—" if r["server_restart_pre_D_ms"] is None else f"{r['server_restart_pre_D_ms']:.1f} -> {r['server_restart_post_D_ms']:.1f} ms"
+        guard = "—" if r["resume_guard_margin_ms"]["max"] == 0 else f"p50 {r['resume_guard_margin_ms']['p50']:.2f} ms, min not modeled"
+        lines.append(f"| {r['scenario']} | {r['relay_D_last60_range_ms']:.2f} ms | {r['relay_direction_changes']} | {join_delta} | {r['expired_stat_events']} | {expiry} | {r['disconnect_stat_removals']} | {restart} | {guard} |")
+    lines += [
         "",
         "Production room-D theoretical slew times are [ESTIMATE]: +100 ms takes 400 s; -100 ms takes 666.7 s, before hysteresis and telemetry effects.",
     ]
