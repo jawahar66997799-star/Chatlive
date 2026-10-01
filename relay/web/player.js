@@ -1,4 +1,4 @@
-import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,targetServerTimeMs,fallbackContextTimeForPerformance} from './sync-core.mjs';
+import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,ServerInstanceTracker,targetServerTimeMs,fallbackContextTimeForPerformance} from './sync-core.mjs';
 
 const q=s=>document.querySelector(s);
 const ui={room:q('#room'),state:q('#state'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
@@ -8,11 +8,12 @@ ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'p
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
 const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
+const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
@@ -28,7 +29,7 @@ function startDecoder(){
   if(decoder)return;
   decoder=new Worker('/decoder-worker.js');
   decoder.onmessage=e=>onDecoded(e.data||{});
-  decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});
+  decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});
 }
 startDecoder();
 
@@ -70,8 +71,20 @@ async function ensureAudio(){
 }
 
 function resetPlayout(reason){
-  timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();sabWriter?.reset();node?.port.postMessage({type:'reset'});decoder?.postMessage({type:'reset'});
-  if(reason==='epoch')note('Host started a fresh stream. Re-aligning…');else note('Re-aligning to the live timeline…');
+  timeline.reset();currentEpoch=null;roomTimeline=null;outputMap=new OutputTimeMapper();sabWriter?.reset();node?.port.postMessage({type:'reset'});decoder?.postMessage({type:'reset'});
+  if(reason==='epoch')note('Host started a fresh stream. Re-aligning…');
+  else if(reason==='server-restart')note('Relay restarted. Rebuilding the clock and live timeline…');
+  else note('Re-aligning to the live timeline…');
+}
+
+function observeServerInstance(id){
+  const obs=serverTracker.observe(id);
+  if(obs.id)metrics.serverInstanceId=obs.id;
+  if(!obs.changed)return false;
+  metrics.serverRestarts=serverTracker.changes;
+  clock.reset();pings.clear();lastEpoch=null;lastSeq=null;
+  resetPlayout('server-restart');
+  return true;
 }
 
 function connect(force=false){
@@ -106,26 +119,28 @@ function useClock(t0,t3,t1,t2){
 function onControl(text){
   let m;try{m=JSON.parse(text)}catch{return}
   if(m.type==='clock_resp'){
+    observeServerInstance(m.server_instance_id);
     const id=String(m.id),t0=pings.get(id);if(t0==null)return;pings.delete(id);useClock(t0,performance.now(),m.t1_server_ns,m.t2_server_ns);return;
   }
   if(m.type==='pong'){
     const id=String(m.id),t0=pings.get(id);if(t0==null)return;pings.delete(id);const sn=m.server_ns??m.serverNs;if(sn!=null)useClock(t0,performance.now(),sn,null);return;
   }
   if(m.type==='state'){
+    observeServerInstance(m.server_instance_id);
     hostOnline=!!m.host_online;const tl=m.timeline||{};
     if(m.epoch!=null){const announced=String(m.epoch);if(currentEpoch!==null&&announced!==currentEpoch)resetPlayout('epoch');currentEpoch=announced;metrics.epoch=announced;}
     sampleRate=Number(tl.sample_rate)||sampleRate;channels=Number(tl.channels)||channels;codec=tl.codec||'opus';
     const timelineReady=m.timeline_ready!==false&&Number(tl.origin_server_ns)>0;
     if(timelineReady&&tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};else roomTimeline=null;
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;roomD.setTarget(ms);if(roomD.lastMs==null){roomD.current=roomD.target;roomD.lastMs=performance.now()}}
-    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
+    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline||m.reason==='host_offline'){resetPlayout('host-offline');setState('Host offline','bad')}else setState(joined?'Buffering…':'Host online',joined?'warn':'ok');
     return;
   }
   if(m.type==='hello'){
     hostOnline=!!m.hostOnline;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.current=roomD.target=d;roomD.lastMs=performance.now();
-    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'https://cdn.jsdelivr.net/npm/libopus-wasm@0.4.1/dist/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
+    decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     setState(hostOnline?(joined?'Buffering…':'Host online'):'Host offline',hostOnline?'ok':'bad');
     return;
   }
@@ -217,6 +232,7 @@ function render(){
     'Reconnects: '+metrics.reconnects+' · stale drops: '+metrics.staleDrops,
     'SAB: '+(sabWriter?'yes':'no')+' · isolated: '+(metrics.crossOriginIsolated?'yes':'no'),
     'Audio: '+metrics.audioState+' · epoch: '+(metrics.epoch??'—')+' · seq: '+(metrics.seq??'—'),
+    'Relay instance: '+(metrics.serverInstanceId?metrics.serverInstanceId.slice(0,8)+'…':'—')+' · restarts: '+metrics.serverRestarts,
     'Clock samples: '+(c?.accepted??0)+'/'+(c?.total??0)
   ].join('\n');
 }
