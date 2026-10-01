@@ -139,7 +139,7 @@ class ListenerMetrics:
     correction_samples_ppm: List[float] = field(default_factory=list)
 
 
-def make_listeners(count: int, scenario: str, rng: random.Random) -> List[Listener]:
+def make_listeners(count: int, scenario: str, rng: random.Random, include_outages: bool = True) -> List[Listener]:
     listeners: List[Listener] = []
     kinds = ["wifi", "good_cellular", "poor_cellular"]
     for i in range(count):
@@ -160,12 +160,13 @@ def make_listeners(count: int, scenario: str, rng: random.Random) -> List[Listen
         calibration_error = rng.gauss(0.0, 0.45)
 
         outage = None
-        if i % 7 == 1:
-            outage = Outage(60_000.0 + i * 13.0, 500.0)
-        elif i % 7 == 3:
-            outage = Outage(120_000.0 + i * 11.0, 1_000.0)
-        elif i % 7 == 5:
-            outage = Outage(180_000.0 + i * 7.0, 3_000.0)
+        if include_outages:
+            if i % 7 == 1:
+                outage = Outage(60_000.0 + i * 13.0, 500.0)
+            elif i % 7 == 3:
+                outage = Outage(120_000.0 + i * 11.0, 1_000.0)
+            elif i % 7 == 5:
+                outage = Outage(180_000.0 + i * 7.0, 3_000.0)
 
         listeners.append(Listener(
             ident=i,
@@ -261,9 +262,10 @@ def simulate(
     seed: int,
     mode: str,
     target_delay_ms: float,
+    include_outages: bool,
 ) -> Dict[str, object]:
     rng = random.Random(seed ^ sum(ord(c) for c in scenario) ^ (17 if mode == "adaptive" else 0))
-    listeners = make_listeners(count, scenario, rng)
+    listeners = make_listeners(count, scenario, rng, include_outages=include_outages)
     for l in listeners:
         initial_clock_sync(l, rng)
 
@@ -389,6 +391,7 @@ def simulate(
         "duration_s": duration_s,
         "packet_ms": PACKET_MS,
         "target_delay_ms": target_delay_ms,
+        "outages": "on" if include_outages else "off",
         "listener_to_listener_skew_ms": stats(skew_samples),
         "aggregate": summarize_listener_metrics(metrics),
         "listeners_detail": [asdict(m) | {
@@ -410,15 +413,15 @@ def markdown(results: List[Dict[str, object]]) -> str:
         "",
         "All quantitative values in this report are **[SIMULATED]**.",
         "",
-        "| Mode | Scenario | N | Skew p50 ms | p95 | p99 | max | Late p95 % | Buffer p95 ms | Continuity p50 % | Hard resync max |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Mode | Scenario | Outages | N | Skew p50 ms | p95 | p99 | max | Late p95 % | Buffer p95 ms | Continuity p50 % | Hard resync max |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         s = r["listener_to_listener_skew_ms"]
         a = r["aggregate"]
         cont = a["continuity_pct"]
         lines.append(
-            f"| {r['mode']} | {r['scenario']} | {r['listeners']} | "
+            f"| {r['mode']} | {r['scenario']} | {r['outages']} | {r['listeners']} | "
             f"{s['p50']:.2f} | {s['p95']:.2f} | {s['p99']:.2f} | {s['max']:.2f} | "
             f"{a['late_packet_pct']['p95']:.3f} | {a['buffer_depth_ms']['p95']:.1f} | "
             f"{cont['p50']:.4f} | {a['hard_resync_count']['max']:.0f} |"
@@ -437,6 +440,7 @@ def main() -> int:
     ap.add_argument("--duration-s", type=float, default=300.0)
     ap.add_argument("--seed", type=int, default=20261001)
     ap.add_argument("--target-delay-ms", type=float, default=400.0)
+    ap.add_argument("--outages", choices=["on", "off"], default="on")
     ap.add_argument("--mode", choices=["current", "adaptive", "both"], default="both")
     ap.add_argument("--scenario", choices=["mixed", "wifi", "good_cellular", "poor_cellular", "all"], default="all")
     ap.add_argument("--json-out", default="")
@@ -458,6 +462,7 @@ def main() -> int:
                 seed=args.seed,
                 mode=mode,
                 target_delay_ms=args.target_delay_ms,
+                include_outages=(args.outages == "on"),
             ))
 
     payload = {"evidence": EVIDENCE, "results": results}
