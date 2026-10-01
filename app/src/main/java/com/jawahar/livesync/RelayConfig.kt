@@ -70,9 +70,7 @@ data class RelayConfig(
             val relay = prefs.getString(KEY_RELAY, "").orEmpty().trim()
                 .ifBlank { BuildConfig.DEFAULT_RELAY_URL.trim() }
             val token = prefs.getString(KEY_TOKEN, "").orEmpty().trim()
-                .ifBlank { BuildConfig.DEFAULT_HOST_TOKEN.trim() }
             val guestToken = prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
-                .ifBlank { BuildConfig.DEFAULT_GUEST_TOKEN.trim() }
             val guest = prefs.getString(KEY_GUEST, "").orEmpty().trim()
                 .ifBlank { BuildConfig.DEFAULT_GUEST_BASE_URL.trim() }
             return RelayConfig(relay, room, token, guestToken, guest)
