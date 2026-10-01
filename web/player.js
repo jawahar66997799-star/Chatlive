@@ -1,7 +1,7 @@
-import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,ServerInstanceTracker,targetServerTimeMs,fallbackContextTimeForPerformance} from './sync-core.mjs';
+import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,ServerInstanceTracker,targetServerTimeMs,fallbackContextTimeForPerformance,deriveGuestPipelineState} from './sync-core.mjs';
 
 const q=s=>document.querySelector(s);
-const ui={room:q('#room'),state:q('#state'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
+const ui={room:q('#room'),state:q('#state'),reason:q('#reason'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
 const room=location.pathname.startsWith('/r/')?decodeURIComponent(location.pathname.slice(3)):(new URLSearchParams(location.search).get('room')||'');
 ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'private room'):'invalid link';
 
@@ -12,6 +12,9 @@ const serverTracker=new ServerInstanceTracker();
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=100,generation=0,clockTimer=null,pingId=0,pings=new Map(),stableOpenTimer=null;
 let lastRelayMessageAt=0,lastBinaryAt=0,transportWatchdogTimer=null;
+let relayStateKnown=false,everRelayConnected=false,hostOnlineAt=0,firstBinaryAt=0,binaryFrames=0,lastPcmAt=0,pcmFrames=0;
+let decoderFailed=false,decoderError='',unlockAttempted=false,resyncUntil=0,resyncReason='';
+let lastAudibleOutputAt=0,lastDirectAudibleAt=0,directAudibleFromPerf=0,directAudibleUntilPerf=0,currentPipeline=null,pipelineStateSince=0,pipelineTransitions=0;
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null,wakeLock=null;
 let relayStreamState='CONNECTED_NO_HOST',hostCaptureState='';
 let audioEngineRebuilds=0,audioEngineRebuilding=false;
@@ -22,110 +25,90 @@ let fallbackEnteredAt=null,precisionRecoveryGraceUntil=0,lastPrecisionRecoveryAt
 let underrunWindowStart=0,underrunBurstCount=0,forceContinuityOnNextPcm=false,lastUnderrunAt=0;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
 const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:850,recommendedDelayMs:850,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,workletAlive:false,workletQuanta:0,workletProcessorErrors:0,schedulerErrors:0,lastSchedulerError:'',audioEngineRebuilds:0,directPlayback:false,directSources:0,directScheduledFrames:0,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,underrunBursts:0,continuityRecoveries:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,transportWatchdogReconnects:0,lastRelayAgeMs:null,lastBinaryAgeMs:null,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,relayStreamState:'CONNECTED_NO_HOST',hostCaptureState:'',crossOriginIsolated:!!self.crossOriginIsolated};
+Object.assign(metrics,{pipelineState:'CONNECTING',pipelineLabel:'CONNECTING',pipelineReason:'Opening the secure live connection.',pipelineAction:'',pipelineStateSinceMs:0,pipelineTransitions:0,binaryFrames:0,pcmFrames:0,clockLocked:false});
 self.__JLS_METRICS__=metrics;
 
-function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
-function note(s){ui.note.textContent=s}
-function showContinuityState(outputHealthy=false,suffix=''){
-  const capture=hostCaptureState?(' · '+hostCaptureState):'';
-  if(relayStreamState==='CONNECTED_NO_HOST'){setState('CONNECTED_NO_HOST · waiting for host','warn');return}
-  if(relayStreamState==='HOST_CONNECTED_NO_AUDIO'){setState('HOST_CONNECTED_NO_AUDIO'+capture,'warn');return}
-  if(relayStreamState==='HOST_STALLED'){setState('HOST_STALLED · no live audio'+capture,'bad');return}
-  if(relayStreamState==='AUDIO_FLOWING'){setState(outputHealthy?('LIVE'+suffix):'AUDIO_FLOWING · preparing output',outputHealthy?'ok':'warn');return}
-  setState(relayStreamState||'Connected','warn');
+function setState(s,k='warn'){
+  // Legacy event hints may still call this helper, but an optimistic Listening
+  // label is never allowed to outrank the evidence-driven pipeline state.
+  if(/^Listening\b/i.test(String(s||'')))return;
+  ui.state.textContent=s;ui.dot.className='dot '+k;
 }
+function note(s){ui.note.textContent=s}
 
+function markResync(reason,durationMs=1000){
+  const now=performance.now();
+  resyncUntil=Math.max(resyncUntil,now+Math.max(250,durationMs));
+  resyncReason=String(reason||'Timing is being realigned.');
+}
+function isClockLocked(){
+  const c=clock.snapshot();
+  if(!c||c.accepted<4||c.total<4||!Number.isFinite(c.confidence95Ms))return false;
+  const maxConfidence=Math.max(25,Math.min(150,(Number(roomD.current)||400)*.25));
+  return c.confidence95Ms<=maxConfidence&&Number.isFinite(c.driftPpm);
+}
+function directOutputAudible(now=performance.now()){
+  const active=!!audio&&audio.state==='running'&&directAudibleFromPerf>0&&now>=directAudibleFromPerf&&now<=directAudibleUntilPerf;
+  if(active)lastDirectAudibleAt=now;
+  return active;
+}
+function resetAudioEvidence(){
+  firstBinaryAt=0;lastBinaryAt=0;binaryFrames=0;lastPcmAt=0;pcmFrames=0;
+  lastAudibleOutputAt=0;lastDirectAudibleAt=0;directAudibleFromPerf=0;directAudibleUntilPerf=0;
+  metrics.binaryFrames=0;metrics.pcmFrames=0;
+}
+function pipelineEvidence(now=performance.now()){
+  return {
+    hasRoom:!!room,
+    networkOnline:navigator.onLine!==false,
+    relayOpen:!!ws&&ws.readyState===WebSocket.OPEN,
+    everRelayConnected,relayStateKnown,lastRelayMessageAt,
+    hostOnline,hostOnlineAt,relayStreamState,hostCaptureState,
+    binaryFrames,lastBinaryAt,
+    decoderReady:metrics.decoder!=='starting'&&metrics.decoder!=='opus-unavailable'&&!decoderFailed,
+    decoderFailed,decoderError,pcmFrames,lastPcmAt,
+    decodedSignal:metrics.decodedPeakDb>-90||metrics.decodedRmsDb>-90,
+    audioContextState:audio?.state||'none',unlockAttempted,
+    clockLocked:isClockLocked(),bufferMs:metrics.bufferMs,targetDelayMs:metrics.targetDelayMs,
+    schedulerReady:metrics.scheduledFrames>0&&(metrics.workletAlive||metrics.directPlayback),
+    outputAudible:(lastAudibleOutputAt>0&&now-lastAudibleOutputAt<=1100)||directOutputAudible(now),
+    lastAudibleOutputAt,lastDirectAudibleAt,lastUnderrunAt,
+    resyncUntil,resyncReason,
+    continuityMode:metrics.fallbackPlayback||metrics.directPlayback,
+  };
+}
+function applyPipelineState(now=performance.now()){
+  const p=deriveGuestPipelineState(pipelineEvidence(now),now);
+  if(!currentPipeline||currentPipeline.code!==p.code){pipelineTransitions++;pipelineStateSince=now;}
+  currentPipeline=p;
+  metrics.pipelineState=p.code;metrics.pipelineLabel=p.label;metrics.pipelineReason=p.reason;metrics.pipelineAction=p.action;
+  metrics.pipelineStateSinceMs=pipelineStateSince;metrics.pipelineTransitions=pipelineTransitions;metrics.binaryFrames=binaryFrames;metrics.pcmFrames=pcmFrames;metrics.clockLocked=isClockLocked();
+  ui.state.textContent=p.label;ui.dot.className='dot '+(p.tone==='ok'?'ok':p.tone==='bad'?'bad':'');
+  if(ui.reason)ui.reason.textContent=p.reason;
+  ui.note.textContent=p.action;
+  if(p.code==='PLAYING'){ui.join.disabled=true;ui.join.textContent='PLAYING';}
+  else if(p.code==='AUTOPLAY_BLOCKED'){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';}
+  else if(p.code==='AUDIOCONTEXT_SUSPENDED'){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';}
+  else if(audio?.state==='running'&&joined){ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';}
+  else if(p.code==='INVALID_LINK'){ui.join.disabled=true;}
+  return p;
+}
+function showContinuityState(){applyPipelineState();}
 function repairJoinState(){
   if(!audio||!node||audio.state!=='running')return false;
   if(joined)return true;
-  // AudioContext.running is the browser's authoritative proof that playback
-  // permission has been granted. Never discard decoded PCM because a UI flag
-  // missed the transition.
-  joined=true;
-  metrics.selfHeals++;
-  metrics.playoutGate='audio join auto-recovered';
-  ui.join.disabled=true;
-  ui.join.textContent='AUDIO ENABLED';
-  if(hostOnline)showContinuityState(true);
+  joined=true;metrics.selfHeals++;metrics.playoutGate='audio join auto-recovered';
+  ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';
   note('Audio join state recovered automatically. Live playback is starting.');
+  applyPipelineState();
   return true;
 }
-
 function diagnosePipeline(){
-  const wsOpen=!!ws&&ws.readyState===WebSocket.OPEN;
-  const decodedAudible=metrics.decodedRmsDb>-70;
-  const outputAudible=metrics.outputRmsDb>-90||metrics.workletActive||(metrics.directPlayback&&metrics.directSources>0);
-
-  let code='LIVE',message='Live audio pipeline is healthy.',action='No action needed.';
-
-  if(!room){
-    code='INVALID_LINK';message='Guest room token is missing.';action='Open a fresh guest link from the host.';
-  }else if(!wsOpen&&outputAudible){
-    code='RELAY_RECOVERING';message='Relay transport is reconnecting while buffered audio continues.';action='Keep listening; live-edge recovery is automatic.';
-  }else if(!wsOpen){
-    code='RELAY_DISCONNECTED';message='Browser is not connected to the relay.';action='Check network access and wait for reconnect.';
-  }else if(relayStreamState==='CONNECTED_NO_HOST'||!hostOnline){
-    code='CONNECTED_NO_HOST';message='Relay is connected, but no host socket is active.';action='Start or reconnect Jawahar Live Sync on the host phone.';
-  }else if(relayStreamState==='HOST_CONNECTED_NO_AUDIO'){
-    code='HOST_CONNECTED_NO_AUDIO';message='Host is connected, but the relay has not received live audio yet.';action=hostCaptureState?('Host reports '+hostCaptureState+'.'):'Start audible media and verify playback capture on the host.';
-  }else if(relayStreamState==='HOST_STALLED'){
-    code='HOST_STALLED';message='Host socket is alive, but live audio frames stopped arriving.';action=hostCaptureState?('Host reports '+hostCaptureState+'. Automatic live-edge recovery will resume when frames return.'):'Check host capture/media; the guest will resume at the live edge automatically.';
-  }else if(metrics.decoder==='opus-unavailable'){
-    code='DECODER_UNAVAILABLE';message='Opus decoder could not start.';action='Reload the page or use a current Chrome/Edge/Firefox browser.';
-  }else if(metrics.decoder==='starting'){
-    code='DECODER_STARTING';message='Audio decoder is still starting.';action='Wait a moment.';
-  }else if(!decodedAudible){
-    code='NO_HOST_AUDIO';message='Packets are arriving, but decoded audio is silent.';action='Play audible media on the host and verify CAPTURE_OK / non-zero dBFS.';
-  }else if(!audio||!node){
-    code='AUDIO_ENGINE_NOT_READY';message='Decoded audio exists but the browser audio engine is not ready.';action='Tap TO LISTEN once; if needed reload the page.';
-  }else if(audio.state!=='running'){
-    code='AUDIO_GESTURE_REQUIRED';message='Decoded audio exists but browser playback is '+audio.state+'.';action='Tap RESUME AUDIO / TAP TO LISTEN.';
-  }else if(!joined){
-    code='JOIN_STATE_STUCK';message='Browser audio is running but the join state is stuck.';action='Automatic repair is being attempted now.';
-  }else if(!clock.ready){
-    code='CLOCK_CALIBRATING';message='Audio is decoded and joined; the synchronization clock is still calibrating.';action='Wait briefly; safe local playback will engage if needed.';
-  }else if(metrics.scheduledFrames===0){
-    code='SCHEDULER_BLOCKED';message='Audio is decoded but no PCM frames have reached the output scheduler.';action='Automatic safe-playback recovery is being attempted.';
-  }else if(!outputAudible&&decodedAudible){
-    code='OUTPUT_SILENT';message='Audio is decoded and scheduled, but the browser output is silent.';action='Automatic safe local playback is being attempted; also check device volume/output route.';
-  }else if(metrics.fallbackPlayback){
-    code='SAFE_LOCAL';message='Audio is playing in safe local mode while precision sync recovers.';action='Keep listening; precision mode will remain secondary to continuity.';
-  }
-
-  metrics.faultCode=code;metrics.faultMessage=message;metrics.faultAction=action;
-  return {code,message,action};
+  const p=applyPipelineState();
+  metrics.faultCode=p.code;metrics.faultMessage=p.reason;metrics.faultAction=p.action;
+  return {code:p.code,message:p.reason,action:p.action};
 }
-
-function applyDiagnosisState(diagnosis){
-  const labels={
-    OK:['Listening','ok'],
-    SAFE_LOCAL:['Listening · continuity mode','ok'],
-    RELAY_RECOVERING:['Listening · relay reconnecting','ok'],
-    RELAY_DISCONNECTED:['Relay disconnected · retrying','warn'],
-    HOST_OFFLINE:['Host offline','bad'],
-    DECODER_UNAVAILABLE:['Decoder unavailable','bad'],
-    DECODER_STARTING:['Starting decoder…','warn'],
-    NO_HOST_AUDIO:['No host audio','warn'],
-    AUDIO_ENGINE_NOT_READY:['Audio engine not ready','warn'],
-    AUDIO_GESTURE_REQUIRED:['Tap to resume audio','warn'],
-    JOIN_STATE_STUCK:['Repairing audio join','warn'],
-    CLOCK_CALIBRATING:['Calibrating synchronization…','warn'],
-    SCHEDULER_BLOCKED:['Recovering output scheduler','warn'],
-    OUTPUT_SILENT:['Output silent · recovering','bad'],
-    INVALID_LINK:['Invalid guest link','bad']
-  };
-  const [label,kind]=labels[diagnosis.code]||['Pipeline fault · '+diagnosis.code,'bad'];
-  setState(label,kind);
-  if(diagnosis.code==='OK'){
-    if(ui.note.dataset.pipelineFault==='1'){
-      ui.note.textContent='Live audio pipeline healthy.';
-      ui.note.dataset.pipelineFault='0';
-    }
-  }else{
-    ui.note.textContent=diagnosis.code+': '+diagnosis.message+' '+diagnosis.action;
-    ui.note.dataset.pipelineFault='1';
-  }
-}
+function applyDiagnosisState(){applyPipelineState();}
 
 function wsURL(){
   const base=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;
@@ -187,8 +170,8 @@ async function ensureAudio(){
   metrics.audioState=audio.state;sampleOutputClock();
   audio.addEventListener('statechange',()=>{
     metrics.audioState=audio.state;
-    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO';setState('Playback interrupted','bad')}
-    else if(audio.state==='running'&&joined&&hostOnline)showContinuityState(true);
+    if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME AUDIO'}
+    applyPipelineState();
   });
 }
 
@@ -216,6 +199,8 @@ async function rebuildAudioEngine(reason){
 
 function resetPlayout(reason){
   timeline.reset();currentEpoch=null;outputMap=new OutputTimeMapper();fallbackNextTargetFrame=null;decodedAudibleSince=null;
+  if(reason==='host-offline'||reason==='epoch'||reason==='server-restart')resetAudioEvidence();
+  if(reason==='epoch'||reason==='server-restart'||reason==='resume')markResync(reason,1200);
   fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackEnteredAt=null;precisionRecoveryGraceUntil=0;lastPrecisionRecoveryAttempt=0;
   stopDirectPlayback();sabWriter?.reset();node?.port.postMessage({type:'reset'});
   // Playout resets must never tear down the Opus decoder. In WebCodecs,
@@ -251,8 +236,8 @@ function connect(force=false){
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();lastBinaryAt=0;ui.join.disabled=false;setState('Connected · checking live state','warn');clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);clearTimeout(stableOpenTimer);stableOpenTimer=setTimeout(()=>{if(gen===generation&&ws?.readyState===WebSocket.OPEN)backoff=100},5000);startTransportWatchdog()};
-  ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
+  ws.onopen=()=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();everRelayConnected=true;ui.join.disabled=false;clockBurst();clearInterval(clockTimer);clockTimer=setInterval(sendClock,1000);clearTimeout(stableOpenTimer);stableOpenTimer=setTimeout(()=>{if(gen===generation&&ws?.readyState===WebSocket.OPEN)backoff=100},5000);startTransportWatchdog();applyPipelineState()};
+  ws.onmessage=e=>{if(gen!==generation)return;lastRelayMessageAt=performance.now();if(typeof e.data==='string')onControl(e.data);else if(e.data instanceof ArrayBuffer){const t=performance.now();lastBinaryAt=t;if(!firstBinaryAt)firstBinaryAt=t;binaryFrames++;metrics.binaryFrames=binaryFrames;decoder.postMessage({type:'frame',buffer:e.data,generation:gen,arrivalPerfMs:t},[e.data])}};
   ws.onclose=e=>{
     if(gen!==generation)return;
     clearInterval(clockTimer);clockTimer=null;clearTimeout(stableOpenTimer);stableOpenTimer=null;stopTransportWatchdog();
@@ -271,6 +256,7 @@ function connect(force=false){
       setState(carryingAudio?'RECONNECTING · buffered audio playing':'RECONNECTING','warn');
       note('Connection interrupted; recovery is automatic and stale backlog will not be replayed.');
     }
+    applyPipelineState();
     scheduleReconnect();
   };
   ws.onerror=()=>{};
@@ -319,7 +305,7 @@ function onControl(text){
   }
   if(m.type==='state'){
     observeServerInstance(m.server_instance_id);
-    hostOnline=!!m.host_online;const tl=m.timeline||{};
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=!!m.host_online;if(hostOnline&&!wasHostOnline)hostOnlineAt=performance.now();if(!hostOnline)hostOnlineAt=0;const tl=m.timeline||{};
     relayStreamState=String(m.stream_state||(hostOnline?(m.timeline_ready===false?'HOST_CONNECTED_NO_AUDIO':'AUDIO_FLOWING'):'CONNECTED_NO_HOST'));
     hostCaptureState=String(m.host_capture_state||'');
     metrics.relayStreamState=relayStreamState;metrics.hostCaptureState=hostCaptureState;
@@ -343,7 +329,7 @@ function onControl(text){
     return;
   }
   if(m.type==='hello'){
-    hostOnline=!!m.hostOnline;relayStreamState=hostOnline?'AUDIO_FLOWING':'CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=!!m.hostOnline;if(hostOnline&&!wasHostOnline)hostOnlineAt=performance.now();if(!hostOnline)hostOnlineAt=0;relayStreamState=hostOnline?'AUDIO_FLOWING':'CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.reset(d,performance.now());roomDNeedsAuthoritativeSnap=false;
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
     if(!hostOnline)showContinuityState(false);
@@ -351,9 +337,9 @@ function onControl(text){
     else showContinuityState(false);
     return;
   }
-  if(m.type==='host-offline'){hostOnline=false;relayStreamState='CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;resetPlayout('host-offline');showContinuityState(false)}
+  if(m.type==='host-offline'){relayStateKnown=true;hostOnline=false;hostOnlineAt=0;relayStreamState='CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;resetPlayout('host-offline');applyPipelineState()}
   if(m.type==='host-online'){
-    hostOnline=true;relayStreamState='HOST_CONNECTED_NO_AUDIO';metrics.relayStreamState=relayStreamState;
+    relayStateKnown=true;const wasHostOnline=hostOnline;hostOnline=true;if(!wasHostOnline)hostOnlineAt=performance.now();relayStreamState='HOST_CONNECTED_NO_AUDIO';metrics.relayStreamState=relayStreamState;
     showContinuityState(false);
   }
 }
@@ -367,7 +353,7 @@ function ensureDirectGain(){
 
 function stopDirectPlayback(){
   for(const s of directSources){try{s.stop()}catch{} try{s.disconnect()}catch{}}
-  directSources.clear();directNextTime=null;metrics.directSources=0;metrics.directPlayback=false;
+  directSources.clear();directNextTime=null;directAudibleFromPerf=0;directAudibleUntilPerf=0;metrics.directSources=0;metrics.directPlayback=false;
   try{directGain?.disconnect()}catch{} directGain=null;
 }
 
@@ -385,6 +371,11 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
     src.start(start);
+    if((Number(m.decodedPeakDb)||metrics.decodedPeakDb)>-90){
+      const perfNow=performance.now(),startPerf=perfNow+Math.max(0,start-now)*1000,endPerf=startPerf+(m.frames/sourceRate)*1000;
+      if(directAudibleUntilPerf<perfNow)directAudibleFromPerf=startPerf;
+      directAudibleUntilPerf=Math.max(directAudibleUntilPerf,endPerf);
+    }
     metrics.playoutGate='DIRECT BUFFER playing: '+reason;
     if(hostOnline)showContinuityState(true,' · compatibility mode');
     return true;
@@ -475,10 +466,10 @@ function shouldForceSafeLocal(now=performance.now()){
 }
 
 function onDecoded(m){
-  if(m.type==='decoder-ready'){metrics.decoder=m.mode;return}
-  if(m.type==='decoder-error'){if(m.fatal){setState('Audio decoder unavailable','bad');note(m.message)}return}
+  if(m.type==='decoder-ready'){metrics.decoder=m.mode;decoderFailed=false;decoderError='';applyPipelineState();return}
+  if(m.type==='decoder-error'){if(m.fatal){decoderFailed=true;decoderError=String(m.message||'decoder failed');metrics.decoder='opus-unavailable';applyPipelineState()}return}
   if(m.type!=='pcm-frame'||m.generation!==generation)return;
-  metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;
+  lastPcmAt=performance.now();pcmFrames++;metrics.pcmFrames=pcmFrames;metrics.decoderMs=m.decodeMs||0;metrics.seq=m.seq;
   metrics.decodedRmsDb=Number.isFinite(m.decodedRmsDb)?m.decodedRmsDb:-120;
   metrics.decodedPeakDb=Number.isFinite(m.decodedPeakDb)?m.decodedPeakDb:-120;
   if(metrics.decodedRmsDb>-70){
@@ -535,7 +526,7 @@ function onDecoded(m){
     return;
   }
   const epoch=String(m.epoch);
-  if(m.discontinuity){timeline.reset();sabWriter?.reset();node.port.postMessage({type:'reset'});metrics.hardResyncs++}
+  if(m.discontinuity){timeline.reset();sabWriter?.reset();node.port.postMessage({type:'reset'});metrics.hardResyncs++;markResync('Host stream discontinuity; re-anchoring the live timeline.',900)}
   if(currentEpoch===null)currentEpoch=epoch;else if(epoch!==currentEpoch){resetPlayout('epoch');currentEpoch=epoch}
   metrics.epoch=epoch;
   const ingressMs=Number(BigInt(m.serverNs))/1e6,pos=Number.isFinite(m.samplePosition)?m.samplePosition:null;
@@ -591,13 +582,14 @@ function sampleOutputClock(){
   if(!audio)return;
   try{if(typeof audio.getOutputTimestamp==='function'){const t=audio.getOutputTimestamp();if(Number.isFinite(t?.performanceTime)&&t.performanceTime>0&&Number.isFinite(t?.contextTime))outputMap.add({performanceTimeMs:t.performanceTime,contextTimeSec:t.contextTime})}}catch{}
   const o=Number(audio.outputLatency),b=Number(audio.baseLatency);metrics.outputLatencyMs=Number.isFinite(o)?o*1000:null;metrics.baseLatencyMs=Number.isFinite(b)?b*1000:null;
-  if(lastOutputLatency!=null&&metrics.outputLatencyMs!=null&&Math.abs(metrics.outputLatencyMs-lastOutputLatency)>10&&joined){outputMap=new OutputTimeMapper();timeline.reset();node?.port.postMessage({type:'reset'});metrics.hardResyncs++;note('Audio output route changed; re-aligning.')}
+  if(lastOutputLatency!=null&&metrics.outputLatencyMs!=null&&Math.abs(metrics.outputLatencyMs-lastOutputLatency)>10&&joined){outputMap=new OutputTimeMapper();timeline.reset();node?.port.postMessage({type:'reset'});metrics.hardResyncs++;markResync('Audio output route changed; rebuilding output timing.',1200);note('Audio output route changed; re-aligning.')}
   if(metrics.outputLatencyMs!=null)lastOutputLatency=metrics.outputLatencyMs;
 }
 function onWorklet(m){
   if(m.type==='metrics'){
     metrics.bufferMs=m.bufferMs;metrics.resamplerPpm=m.ppm;metrics.underruns=m.underruns;metrics.lateFrames=Math.max(metrics.lateFrames,m.lateFrames);metrics.hardResyncs=Math.max(metrics.hardResyncs,m.hardResyncs);metrics.overruns=Math.max(metrics.overruns,m.overruns);
     metrics.outputRmsDb=Number.isFinite(m.outputRmsDb)?m.outputRmsDb:-120;metrics.outputPeakDb=Number.isFinite(m.outputPeakDb)?m.outputPeakDb:-120;metrics.workletActive=!!m.active;
+    if(metrics.outputPeakDb>-90||metrics.outputRmsDb>-90)lastAudibleOutputAt=performance.now();
     metrics.workletAlive=true;metrics.workletQuanta=Number(m.processQuanta)||metrics.workletQuanta;
   }
   else if(m.type==='underrun'){
@@ -621,7 +613,7 @@ function onWorklet(m){
     }
   }
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
-  else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;note('Large timing error corrected with a short crossfade.')}
+  else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;markResync('Large timing error corrected with a short crossfade.',900);note('Large timing error corrected with a short crossfade.')}
   else if(m.type==='overrun')metrics.overruns=m.count;
 }
 
@@ -634,6 +626,7 @@ async function holdWakeLock(){
   }catch{}
 }
 async function unlock(){
+  unlockAttempted=true;
   try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='AUDIO ENABLED';resetPlayout('join');showContinuityState(false);note('Live audio only. No YouTube or song download is needed on this device.')}
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
@@ -659,8 +652,8 @@ function resumeVisible(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void holdWakeLock();resumeVisible()}else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
-window.addEventListener('online',()=>connect(true));
-window.addEventListener('offline',()=>setState('Network offline','bad'));
+window.addEventListener('online',()=>{connect(true);applyPipelineState()});
+window.addEventListener('offline',()=>applyPipelineState());
 try{
   navigator.connection?.addEventListener?.('change',()=>{
     // A Wi-Fi/cellular route change can leave an apparently-open TCP socket
@@ -670,7 +663,7 @@ try{
     else connect();
   });
 }catch{}
-try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
+try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++;markResync('Audio output device changed; rebuilding output timing.',1200)}})}catch{}
 
 function sendStats(){
   if(!ws||ws.readyState!==WebSocket.OPEN)return;
@@ -687,8 +680,10 @@ function render(){
   const decodeOk=metrics.decoder!=='starting'&&metrics.decoder!=='opus-unavailable'&&metrics.decodedRmsDb>-70;
   const audioOk=!!audio&&!!node&&audio.state==='running'&&joined;
   const scheduleOk=metrics.scheduledFrames>0;
-  const outputOk=metrics.outputRmsDb>-90||metrics.workletActive;
+  const outputOk=(lastAudibleOutputAt>0&&performance.now()-lastAudibleOutputAt<=1100)||directOutputAudible();
   ui.diag.textContent=[
+    'STATE: '+metrics.pipelineState+' · '+metrics.pipelineLabel,
+    'STATE AGE: '+fmt(performance.now()-metrics.pipelineStateSinceMs)+' ms · transitions '+metrics.pipelineTransitions,
     'DIAGNOSIS: '+diagnosis.code,
     'Cause: '+diagnosis.message,
     'Action: '+diagnosis.action,
