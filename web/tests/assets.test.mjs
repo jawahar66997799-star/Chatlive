@@ -98,3 +98,10 @@ assert.match(player,/repairJoinState\(\);[\s\S]*if\(!audio\|\|!node\)/);
 assert.match(player,/startup scheduler bootstrap/);
 assert.match(player,/AudioContext\.running is the browser's authoritative proof/);
 assert.doesNotMatch(player,/if\s*\(!joined\)\s*\{\s*metrics\.playoutGate='waiting for audio join';\s*return;/);
+
+
+assert.doesNotMatch(player,/decoder\?\.postMessage\(\{type:'reset'\}\)/,
+  'ordinary playout reset must not reset the Opus decoder');
+assert.match(worker,/webDecoder\.reset\(\);[\s\S]*webDecoder\.configure\(\{codec:'opus'/,
+  'explicit WebCodecs reset must immediately reconfigure the decoder');
+assert.match(worker,/type:'decoder-reset-ready'/);
