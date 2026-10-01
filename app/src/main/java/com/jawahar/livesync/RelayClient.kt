@@ -170,7 +170,7 @@ class RelayClient(
         if (!connected.get() || ws.queueSize() > MAX_SOCKET_QUEUE_BYTES) return
         ws.send(
             JSONObject()
-                .put("type", "state")
+                .put("type", "host_state")
                 .put("v", JlsProtocol.VERSION)
                 .put("state", snapshot.health.name)
                 .toString()
@@ -239,7 +239,7 @@ class RelayClient(
             try {
                 val obj = JSONObject(text)
                 when (obj.optString("type")) {
-                    "welcome_host" -> {
+                    "hello_host_ack" -> {
                         if (obj.optInt("v", -1) != JlsProtocol.VERSION) {
                             webSocket.close(1002, "protocol-version-mismatch")
                             return
@@ -248,7 +248,7 @@ class RelayClient(
                         connected.set(true)
                         val previousAttempts = reconnectAttempts.getAndSet(0)
                         if (previousAttempts > 0) reconnectCount.incrementAndGet()
-                        val resumeAfter = obj.optLong("resume_after_seq", 0L)
+                        val resumeAfter = obj.optLong("resume_after_sequence", 0L)\n                        while (true) {\n                            val head = queue.peek() ?: break\n                            if (head.sequence > resumeAfter) break\n                            queue.poll()\n                            droppedFrames.incrementAndGet()\n                        }
                         listener.onRelayState(
                             RelayState.CONNECTED,
                             if (reconnectCount.get() > 0) {
@@ -259,7 +259,7 @@ class RelayClient(
                         )
                         emitMetrics()
                     }
-                    "pong" -> {
+                    "clock_resp" -> {
                         val id = obj.optString("id")
                         val sent = pingSentNs.remove(id)
                         if (sent != null) {
@@ -395,7 +395,7 @@ class RelayClient(
         val id = now.toString()
         pingSentNs[id] = now
         val msg = JSONObject()
-            .put("type", "ping")
+            .put("type", "clock_req")
             .put("v", JlsProtocol.VERSION)
             .put("id", id)
             .put("t0_ns", now)
