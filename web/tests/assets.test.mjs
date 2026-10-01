@@ -120,7 +120,6 @@ assert.match(worklet,/processQuanta/);
 
 assert.match(player,/function startTransportWatchdog/);
 assert.match(player,/relayAge>3500/);
-assert.match(player,/Math\.min\(2000/);
 assert.match(player,/transportWatchdogReconnects/);
 assert.match(player,/Transport age: relay/);
 assert.match(player,/SAFE LOCAL must be an independent continuity path/);
@@ -139,7 +138,6 @@ assert.match(player,/const ok=scheduleDirectBuffer\(m,reason\)/);
 }
 
 
-assert.match(player,/directNextTime=now\+\.300/);
 assert.match(player,/function holdWakeLock/);
 assert.match(player,/navigator\.wakeLock\.request\('screen'\)/);
 assert.match(player,/Wake lock:/);
@@ -153,7 +151,6 @@ assert.doesNotMatch(
   'transient WebSocket close must preserve queued audio instead of flushing playout'
 );
 assert.match(player,/buffered audio is preserved while reconnecting automatically/);
-assert.match(player,/backoff=Math\.min\(2000/);
 
 // Continuity-first regression guards.
 
@@ -163,3 +160,8 @@ assert.match(player,/setInterval\(sendClock,1000\)/);
 assert.match(player,/navigator\.connection\?\.addEventListener\?\.\('change'/);
 assert.match(player,/healthyOutput\?'Listening':'Preparing audio…'/);
 assert.doesNotMatch(player,/else setState\(joined\?'Buffering…':'Host online'/);
+assert.match(player,/backoff=Math\.min\(800/);
+assert.match(player,/underrunBurstCount>=3/);
+assert.match(player,/forceContinuityOnNextPcm/);
+assert.match(player,/underrun burst continuity/);
+assert.doesNotMatch(player,/setState\('Buffering…'/);
