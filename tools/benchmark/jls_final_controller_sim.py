@@ -69,7 +69,7 @@ class GuestRoomD:
 class RelayRoomD:
     current: float=400.0
     dmin:float=150.0; dmax:float=1000.0; ttl_ms:float=10000.0; update_ms:float=1000.0
-    up_per_s:float=60.0; down_per_s:float=10.0
+    up_per_s:float=.25; down_per_s:float=.15
     last_adjust_ms:float=0.0; stats_map:dict=field(default_factory=dict)
     last_dir:int=0; direction_changes:int=0
     def remove(self,lid): self.stats_map.pop(lid,None)
@@ -258,7 +258,7 @@ def main():
     a=ap.parse_args()
     scenarios=['clean_wifi','good_cellular','poor_cellular','mixed','jitter50','jitter200','packet_loss','short_outage','reconnect_live_edge']
     out=[{'scenario':s,'adaptive':run_scenario(s,a.listeners,a.duration_s,a.seed,True),'fixed':fixed_baseline(s,a.listeners,a.duration_s,a.seed)} for s in scenarios]
-    payload={'evidence':EVIDENCE,'model':'production constants at youtube-live-sync b8da525af86b7eaef90df770a7aa00a5a243d38e','results':out}
+    payload={'evidence':EVIDENCE,'model':'production constants at youtube-live-sync 8cafe8de6d58ca708110cd37cc94dc26137fda5c','results':out}
     print(markdown(out))
     if a.json_out: Path(a.json_out).write_text(json.dumps(payload,indent=2),encoding='utf-8')
     if a.md_out: Path(a.md_out).write_text(markdown(out),encoding='utf-8')
