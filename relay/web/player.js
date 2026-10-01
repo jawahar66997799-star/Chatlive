@@ -7,7 +7,7 @@ ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'p
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:400,floorMs:150,ceilingMs:1000});
-const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:25,downPerSec:6});
+const roomD=new SlewValue({initial:400,floor:150,ceiling:1000,upPerSec:.25,downPerSec:.15});
 let outputMap=new OutputTimeMapper(),roomTimeline=null;
 let ws=null,reconnectTimer=null,backoff=250,generation=0,clockTimer=null,pingId=0,pings=new Map();
 let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=false,currentEpoch=null;
