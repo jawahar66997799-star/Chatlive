@@ -54,6 +54,10 @@ class CaptureService : Service() {
         private const val CHANNELS = 2
         private const val FRAME_MS = 20
         private const val TARGET_BITRATE = 144_000
+        private val SOURCE_PACKAGES = listOf(
+            "com.google.android.youtube",
+            "com.google.android.apps.youtube.music"
+        )
     }
 
     private val running = AtomicBoolean(false)
@@ -98,6 +102,7 @@ class CaptureService : Service() {
     private var epoch = 0L
     private val sequence = AtomicLong(0)
     private lateinit var relayConfig: RelayConfig
+    private var captureSourceUids: List<Int> = emptyList()
     private var relayClient: RelayClient? = null
     private var logFile: File? = null
     private var logWriter: FileWriter? = null
@@ -197,6 +202,11 @@ class CaptureService : Service() {
             projection?.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
 
             relayConfig = RelayConfig.load(this)
+            captureSourceUids = SOURCE_PACKAGES.mapNotNull(::packageUid).distinct()
+            if (captureSourceUids.isEmpty()) {
+                fail("Official YouTube or YouTube Music is not installed or visible to this app.")
+                return
+            }
             epoch = SecureRandom().nextLong().and(Long.MAX_VALUE).let { if (it == 0L) 1L else it }
             sequence.set(0)
             prepareLog()
@@ -259,11 +269,12 @@ class CaptureService : Service() {
 
     private fun createAndStartRecorder(): Boolean {
         val p = projection ?: return false
-        val config = AudioPlaybackCaptureConfiguration.Builder(p)
+        val captureBuilder = AudioPlaybackCaptureConfiguration.Builder(p)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
             .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-            .build()
+        captureSourceUids.forEach { captureBuilder.addMatchingUid(it) }
+        val config = captureBuilder.build()
 
         val channelMask = AudioFormat.CHANNEL_IN_STEREO
         val minBuffer = AudioRecord.getMinBufferSize(
@@ -650,6 +661,23 @@ class CaptureService : Service() {
                 logWriter?.flush()
             } catch (_: Throwable) {
             }
+        }
+    }
+
+    private fun packageUid(packageName: String): Int? {
+        return try {
+            val info = if (Build.VERSION.SDK_INT >= 33) {
+                packageManager.getApplicationInfo(
+                    packageName,
+                    PackageManager.ApplicationInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getApplicationInfo(packageName, 0)
+            }
+            info.uid
+        } catch (_: Throwable) {
+            null
         }
     }
 
