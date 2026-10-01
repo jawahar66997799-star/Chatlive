@@ -33,19 +33,29 @@ async function initDecoder(next) {
   decoderMode='opus-unavailable'; postError(`No Opus decoder available: ${lastWasmError?.message||lastWasmError}`,true);
 }
 function parseWireFrame(buffer,generation,arrivalPerfMs){
-  const dv=new DataView(buffer); if(dv.byteLength<24)throw new Error('short JLS frame');
-  const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3)); if(magic!=='JLS1')throw new Error(`unknown frame magic ${magic}`);
-  if(dv.byteLength>=64&&dv.getUint8(4)===1&&dv.getUint8(5)===1&&dv.getUint8(7)===64){
-    const flags=dv.getUint8(6),epoch=dv.getBigUint64(8,false),seq=dv.getBigUint64(16,false),captureNs=dv.getBigUint64(24,false),samplePosition=dv.getBigUint64(32,false),relayIngressNs=dv.getBigUint64(40,false);
-    const sr=dv.getUint32(48,false),frameSamples=dv.getUint16(52,false),ch=dv.getUint8(54),codecId=dv.getUint8(55),layer=dv.getUint8(56),payloadLen=dv.getUint16(58,false);
-    if(64+payloadLen!==dv.byteLength)throw new Error('JLS1 protocol payload length mismatch'); if(codecId!==1)throw new Error(`unsupported JLS1 codec id ${codecId}`);
-    return {kind:'opus',payload:buffer.slice(64),meta:{protocol:'JLS1/64',generation,arrivalPerfMs,epoch:String(epoch),seq:String(seq),serverNs:String(relayIngressNs),captureNs:String(captureNs),samplePosition:Number(samplePosition),frameSamples,frames:frameSamples,sampleRate:sr,channels:ch,flags,layer,discontinuity:!!(flags&1)},sampleRate:sr,channels:ch,durationUs:Math.round(frameSamples*1e6/sr)};
-  }
-  const epoch=dv.getUint32(4,false),seq=dv.getUint32(8,false),serverNs=dv.getBigUint64(12,false),frames=dv.getUint32(20,false),ch=config.channels||2;
-  const available=Math.floor((dv.byteLength-24)/2); if(frames*ch>available)throw new Error(`truncated PCM payload frames=${frames}`);
-  const pcm=new Float32Array(frames*2); let p=24;
-  for(let i=0;i<frames;i++){const l=dv.getInt16(p,true)/32768;p+=2;let rr=l;if(ch>=2){rr=dv.getInt16(p,true)/32768;p+=2;}pcm[i*2]=l;pcm[i*2+1]=rr;if(ch>2)p+=(ch-2)*2;}
-  return {kind:'pcm',out:{type:'pcm-frame',protocol:'JLS1/24-legacy',generation,arrivalPerfMs,epoch:String(epoch),seq:String(seq),serverNs:String(serverNs),frames,sampleRate:config.sampleRate,channels:2,pcm}};
+  const dv=new DataView(buffer);
+  if(dv.byteLength<64)throw new Error('short JLS1 v1 audio frame');
+  const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+  if(magic!=='JLS1')throw new Error(`unknown frame magic ${magic}`);
+  const version=dv.getUint8(4),messageType=dv.getUint8(5),flags=dv.getUint8(6),headerBytes=dv.getUint8(7);
+  if(version!==1)throw new Error(`unsupported JLS1 protocol version ${version}`);
+  if(messageType!==1)throw new Error(`unsupported JLS1 binary message type ${messageType}`);
+  if(headerBytes!==64)throw new Error(`invalid JLS1 audio header length ${headerBytes}`);
+  if((flags&~0x03)!==0)throw new Error(`unsupported JLS1 audio flags ${flags}`);
+  if(dv.getUint8(57)!==0||dv.getUint32(60,false)!==0)throw new Error('JLS1 reserved header bytes must be zero');
+
+  const epoch=dv.getBigUint64(8,false),seq=dv.getBigUint64(16,false),captureNs=dv.getBigUint64(24,false),samplePosition=dv.getBigUint64(32,false),relayIngressNs=dv.getBigUint64(40,false);
+  const sr=dv.getUint32(48,false),frameSamples=dv.getUint16(52,false),ch=dv.getUint8(54),codecId=dv.getUint8(55),layer=dv.getUint8(56),payloadLen=dv.getUint16(58,false);
+  if(epoch===0n)throw new Error('JLS1 epoch must be non-zero');
+  if(sr!==48000)throw new Error(`unsupported JLS1 sample rate ${sr}`);
+  if(frameSamples!==480&&frameSamples!==960)throw new Error(`unsupported JLS1 frame sample count ${frameSamples}`);
+  if(ch!==2)throw new Error(`unsupported JLS1 channel count ${ch}`);
+  if(codecId!==1)throw new Error(`unsupported JLS1 codec id ${codecId}`);
+  if(layer>1)throw new Error(`unsupported JLS1 layer ${layer}`);
+  if(payloadLen<1)throw new Error('JLS1 payload must be non-empty');
+  if(64+payloadLen!==dv.byteLength)throw new Error('JLS1 protocol payload length mismatch');
+
+  return {kind:'opus',payload:buffer.slice(64),meta:{protocol:'JLS1/64',generation,arrivalPerfMs,epoch:String(epoch),seq:String(seq),serverNs:String(relayIngressNs),captureNs:String(captureNs),samplePosition:Number(samplePosition),frameSamples,frames:frameSamples,sampleRate:sr,channels:ch,flags,layer,discontinuity:!!(flags&1)},sampleRate:sr,channels:ch,durationUs:Math.round(frameSamples*1e6/sr)};
 }
 function handleWebCodecsOutput(audioData){
   const started=performance.now(),key=Number(audioData.timestamp),meta=pendingMeta.get(key);pendingMeta.delete(key);if(!meta){audioData.close();return;}
