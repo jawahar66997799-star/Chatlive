@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/subtle"
 	"errors"
+	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +36,14 @@ type guestConn struct {
 	dropped atomic.Uint64
 }
 
+type listenerStat struct {
+	recommendedDelayMS float64
+	updatedNS          uint64
+	underruns          uint64
+	lateFrames         uint64
+	hardResyncs        uint64
+}
+
 type Room struct {
 	mu sync.Mutex
 
@@ -60,13 +70,21 @@ type Room struct {
 	ring      []*AudioFrame
 	ringBytes int
 
-	guests map[*guestConn]struct{}
+	guests        map[*guestConn]struct{}
+	listenerStats map[uint64]listenerStat
 
-	maxRingBytes  int
-	ringDuration  time.Duration
-	commonDelayNS uint64
-	joinGuardNS   uint64
-	maxGuests     int
+	maxRingBytes       int
+	ringDuration       time.Duration
+	commonDelayNS      uint64
+	delayMinNS         uint64
+	delayMaxNS         uint64
+	delayStatsTTLNS    uint64
+	delayUpdateNS      uint64
+	delayUpNSPerSec    uint64
+	delayDownNSPerSec  uint64
+	lastDelayAdjustNS  uint64
+	joinGuardNS        uint64
+	maxGuests          int
 
 	metrics *Metrics
 }
@@ -75,12 +93,19 @@ func newRoom(cfg Config, metrics *Metrics) *Room {
 	return &Room{
 		id:            cfg.RoomID,
 		hostSecret:    cfg.HostSecret,
-		guestToken:    cfg.GuestToken,
-		guests:        make(map[*guestConn]struct{}),
-		maxRingBytes:  cfg.MaxRingBytes,
-		ringDuration:  cfg.RingDuration,
-		commonDelayNS: uint64(cfg.CommonDelay.Nanoseconds()),
-		joinGuardNS:   uint64(cfg.JoinGuard.Nanoseconds()),
+		guestToken:       cfg.GuestToken,
+		guests:           make(map[*guestConn]struct{}),
+		listenerStats:    make(map[uint64]listenerStat),
+		maxRingBytes:     cfg.MaxRingBytes,
+		ringDuration:     cfg.RingDuration,
+		commonDelayNS:    uint64(cfg.CommonDelay.Nanoseconds()),
+		delayMinNS:       uint64(cfg.CommonDelayMin.Nanoseconds()),
+		delayMaxNS:       uint64(cfg.CommonDelayMax.Nanoseconds()),
+		delayStatsTTLNS:  uint64(cfg.DelayStatsTTL.Nanoseconds()),
+		delayUpdateNS:    uint64(cfg.DelayUpdateInterval.Nanoseconds()),
+		delayUpNSPerSec:  uint64(cfg.DelayUpPerSec.Nanoseconds()),
+		delayDownNSPerSec:uint64(cfg.DelayDownPerSec.Nanoseconds()),
+		joinGuardNS:      uint64(cfg.JoinGuard.Nanoseconds()),
 		maxGuests:     cfg.MaxGuests,
 		sampleRate:    48000,
 		channels:      2,
@@ -183,8 +208,9 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 		}
 	}
 
+	firstFrame := !r.haveFrame
 	f.stampRelayIngress(serverNS)
-	if !r.haveFrame {
+	if firstFrame {
 		r.originServerNS = serverNS
 		r.originSample = f.SamplePosition
 	}
@@ -205,6 +231,14 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 
 	r.metrics.audioFrames.Add(1)
 	r.metrics.audioBytes.Add(uint64(len(f.Raw)))
+
+	// Guests that connected before the first media frame initially know only
+	// that the host is online. Publish the real sample/server anchor before
+	// the first binary frame so every guest schedules against the same epoch
+	// timeline instead of a zero/uninitialized origin.
+	if firstFrame {
+		r.broadcastStateLocked("timeline_started")
+	}
 
 	for g := range r.guests {
 		if g.closed.Load() {
@@ -227,8 +261,9 @@ func (r *Room) evictLocked() {
 		return
 	}
 	minSample := uint64(0)
-	if r.lastSample > uint64(r.sampleRate)*uint64(r.ringDuration/time.Second) {
-		minSample = r.lastSample - uint64(r.sampleRate)*uint64(r.ringDuration/time.Second)
+	ringSamples := (uint64(r.sampleRate) * uint64(r.ringDuration)) / uint64(time.Second)
+	if r.lastSample > ringSamples {
+		minSample = r.lastSample - ringSamples
 	}
 	idx := 0
 	for idx < len(r.ring) {
@@ -281,9 +316,144 @@ func (r *Room) removeGuest(g *guestConn) {
 	r.mu.Lock()
 	if _, ok := r.guests[g]; ok {
 		delete(r.guests, g)
+		delete(r.listenerStats, g.id)
 		r.metrics.guestsCurrent.Add(-1)
 	}
 	r.mu.Unlock()
+}
+
+func (r *Room) updateListenerStats(guestID uint64, m GuestControl, nowNS uint64) {
+	if math.IsNaN(m.RecommendedDelayMS) || math.IsInf(m.RecommendedDelayMS, 0) || m.RecommendedDelayMS <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var exists bool
+	for g := range r.guests {
+		if g.id == guestID {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		return
+	}
+
+	minMS := float64(r.delayMinNS) / 1e6
+	maxMS := float64(r.delayMaxNS) / 1e6
+	rec := math.Max(minMS, math.Min(maxMS, m.RecommendedDelayMS))
+	r.listenerStats[guestID] = listenerStat{
+		recommendedDelayMS: rec,
+		updatedNS:          nowNS,
+		underruns:          m.Underruns,
+		lateFrames:         m.LateFrames,
+		hardResyncs:        m.HardResyncs,
+	}
+
+	if r.adjustCommonDelayLocked(nowNS) {
+		r.broadcastStateLocked("delay_updated")
+	}
+}
+
+func (r *Room) adjustCommonDelayLocked(nowNS uint64) bool {
+	if r.delayStatsTTLNS == 0 || r.delayUpdateNS == 0 {
+		return false
+	}
+	for id, st := range r.listenerStats {
+		if nowNS > st.updatedNS && nowNS-st.updatedNS > r.delayStatsTTLNS {
+			delete(r.listenerStats, id)
+		}
+	}
+	if len(r.listenerStats) == 0 {
+		return false
+	}
+	if r.lastDelayAdjustNS == 0 {
+		r.lastDelayAdjustNS = nowNS
+		return false
+	}
+	if nowNS <= r.lastDelayAdjustNS || nowNS-r.lastDelayAdjustNS < r.delayUpdateNS {
+		return false
+	}
+
+	values := make([]float64, 0, len(r.listenerStats))
+	for _, st := range r.listenerStats {
+		values = append(values, st.recommendedDelayMS)
+	}
+	sort.Float64s(values)
+	idx := int(math.Ceil(0.95*float64(len(values)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(values) {
+		idx = len(values) - 1
+	}
+	targetNS := uint64(values[idx] * 1e6)
+	if targetNS < r.delayMinNS {
+		targetNS = r.delayMinNS
+	}
+	if targetNS > r.delayMaxNS {
+		targetNS = r.delayMaxNS
+	}
+
+	current := r.commonDelayNS
+	const hysteresisNS = uint64(10 * time.Millisecond)
+	if targetNS > current && targetNS-current < hysteresisNS {
+		r.lastDelayAdjustNS = nowNS
+		return false
+	}
+	if current > targetNS && current-targetNS < hysteresisNS {
+		r.lastDelayAdjustNS = nowNS
+		return false
+	}
+
+	elapsedNS := nowNS - r.lastDelayAdjustNS
+	r.lastDelayAdjustNS = nowNS
+	elapsedSec := float64(elapsedNS) / float64(time.Second)
+	if elapsedSec <= 0 {
+		return false
+	}
+
+	var next uint64
+	if targetNS > current {
+		step := uint64(float64(r.delayUpNSPerSec) * elapsedSec)
+		if step < uint64(time.Millisecond) {
+			step = uint64(time.Millisecond)
+		}
+		if current+step < targetNS {
+			next = current + step
+		} else {
+			next = targetNS
+		}
+	} else {
+		step := uint64(float64(r.delayDownNSPerSec) * elapsedSec)
+		if step < uint64(time.Millisecond) {
+			step = uint64(time.Millisecond)
+		}
+		if targetNS+step < current {
+			next = current - step
+		} else {
+			next = targetNS
+		}
+	}
+	if next < r.delayMinNS {
+		next = r.delayMinNS
+	}
+	if next > r.delayMaxNS {
+		next = r.delayMaxNS
+	}
+	if next == current {
+		return false
+	}
+	r.commonDelayNS = next
+	return true
+}
+
+func (r *Room) commonDelayMilliseconds() float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return float64(r.commonDelayNS) / 1e6
 }
 
 func enqueue(g *guestConn, o outbound) bool {
@@ -349,6 +519,8 @@ func (r *Room) stateLocked(nowNS uint64, resumeEpoch, resumeSeq uint64, hasResum
 		"type":                    "state",
 		"v":                       protocolVersion,
 		"host_online":             r.hostOnline,
+		"server_instance_id":      serverInstanceID,
+		"timeline_ready":          r.haveFrame,
 		"room_id":                 r.id,
 		"epoch":                   r.epoch,
 		"earliest_seq":            earliest,
@@ -400,4 +572,6 @@ func (r *Room) cleanupIfIdle(ttl time.Duration) {
 	r.lastSample = 0
 	r.originServerNS = 0
 	r.originSample = 0
+	r.listenerStats = make(map[uint64]listenerStat)
+	r.lastDelayAdjustNS = 0
 }
