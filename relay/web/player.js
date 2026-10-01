@@ -268,18 +268,38 @@ function onControl(text){
     if(timelineReady&&tl.origin_server_ns!=null&&tl.origin_sample_position!=null)roomTimeline={originServerMs:Number(tl.origin_server_ns)/1e6,originSample:Number(tl.origin_sample_position),sampleRate};else roomTimeline=null;
     const d=Number(tl.recommended_delay_ns);if(Number.isFinite(d)&&d>0){const ms=d/1e6;if(roomDNeedsAuthoritativeSnap||roomD.lastMs==null){roomD.reset(ms,performance.now());roomDNeedsAuthoritativeSnap=false}else roomD.setTarget(ms)}
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
-    if(!hostOnline||m.reason==='host_offline'){resetPlayout('host-offline');setState('Host offline','bad')}else setState(joined?'Buffering…':'Host online',joined?'warn':'ok');
+    if(!hostOnline||m.reason==='host_offline'){
+      resetPlayout('host-offline');
+      setState('Host offline','bad');
+    }else if(joined){
+      // A normal state refresh (including adaptive-delay updates) is not a
+      // buffering event. Preserve Listening while the audio pipeline is alive.
+      const healthyOutput =
+        metrics.directPlayback ||
+        metrics.workletActive ||
+        metrics.bufferMs > 40 ||
+        metrics.scheduledFrames > 0;
+      setState(healthyOutput?'Listening':'Preparing audio…',healthyOutput?'ok':'warn');
+    }else{
+      setState('Host online','ok');
+    }
     return;
   }
   if(m.type==='hello'){
     hostOnline=!!m.hostOnline;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.reset(d,performance.now());roomDNeedsAuthoritativeSnap=false;
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
-    setState(hostOnline?(joined?'Buffering…':'Host online'):'Host offline',hostOnline?'ok':'bad');
+    if(!hostOnline)setState('Host offline','bad');
+    else if(joined)setState((metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'Listening':'Preparing audio…',(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'ok':'warn');
+    else setState('Host online','ok');
     return;
   }
   if(m.type==='host-offline'){hostOnline=false;resetPlayout('host-offline');setState('Host offline','bad')}
-  if(m.type==='host-online'){hostOnline=true;setState(joined?'Buffering…':'Host online',joined?'warn':'ok')}
+  if(m.type==='host-online'){
+    hostOnline=true;
+    if(joined)setState((metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'Listening':'Preparing audio…',(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'ok':'warn');
+    else setState('Host online','ok');
+  }
 }
 
 function ensureDirectGain(){
@@ -304,7 +324,7 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     for(let i=0;i<m.frames;i++){l[i]=m.pcm[i*2]||0;r[i]=m.pcm[i*2+1]||0}
     const src=audio.createBufferSource();src.buffer=buffer;src.connect(ensureDirectGain());
     const now=audio.currentTime;
-    if(!Number.isFinite(directNextTime)||directNextTime<now+.080)directNextTime=now+.300;
+    if(!Number.isFinite(directNextTime)||directNextTime<now+.120)directNextTime=now+.700;
     const start=directNextTime;directNextTime+=m.frames/sourceRate;
     directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
@@ -513,7 +533,13 @@ function onWorklet(m){
     metrics.outputRmsDb=Number.isFinite(m.outputRmsDb)?m.outputRmsDb:-120;metrics.outputPeakDb=Number.isFinite(m.outputPeakDb)?m.outputPeakDb:-120;metrics.workletActive=!!m.active;
     metrics.workletAlive=true;metrics.workletQuanta=Number(m.processQuanta)||metrics.workletQuanta;
   }
-  else if(m.type==='underrun'){metrics.underruns=m.count;suggestedD.markLate(performance.now(),30);setState('Buffering…','warn')}
+  else if(m.type==='underrun'){
+    metrics.underruns=m.count;
+    suggestedD.markLate(performance.now(),80);
+    metrics.playoutGate='underrun recovery';
+    if(metrics.directPlayback||metrics.bufferMs>0)setState('Listening · recovering','ok');
+    else setState('Recovering audio…','warn');
+  }
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
   else if(m.type==='hard-resync'){metrics.hardResyncs=m.count;note('Large timing error corrected with a short crossfade.')}
   else if(m.type==='overrun')metrics.overruns=m.count;
@@ -528,7 +554,7 @@ async function holdWakeLock(){
   }catch{}
 }
 async function unlock(){
-  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='LISTENING';resetPlayout('join');setState(hostOnline?'Buffering…':'Host offline',hostOnline?'warn':'bad');note('Live audio only. No YouTube or song download is needed on this device.')}
+  try{await ensureAudio();await audio.resume();if(audio.state!=='running')throw new Error('AudioContext '+audio.state);joined=true;void holdWakeLock();ui.join.disabled=true;ui.join.textContent='LISTENING';resetPlayout('join');setState(hostOnline?'Preparing audio…':'Host offline',hostOnline?'warn':'bad');note('Live audio only. No YouTube or song download is needed on this device.')}
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
 ui.join.addEventListener('click',unlock);
