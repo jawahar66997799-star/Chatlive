@@ -77,6 +77,7 @@ type Room struct {
 	maxRingBytes       int
 	ringDuration       time.Duration
 	commonDelayNS      uint64
+	defaultDelayNS     uint64
 	delayMinNS         uint64
 	delayMaxNS         uint64
 	delayStatsTTLNS    uint64
@@ -100,6 +101,7 @@ func newRoom(cfg Config, metrics *Metrics) *Room {
 		maxRingBytes:     cfg.MaxRingBytes,
 		ringDuration:     cfg.RingDuration,
 		commonDelayNS:    uint64(cfg.CommonDelay.Nanoseconds()),
+		defaultDelayNS:   uint64(cfg.CommonDelay.Nanoseconds()),
 		delayMinNS:       uint64(cfg.CommonDelayMin.Nanoseconds()),
 		delayMaxNS:       uint64(cfg.CommonDelayMax.Nanoseconds()),
 		delayStatsTTLNS:  uint64(cfg.DelayStatsTTL.Nanoseconds()),
@@ -565,5 +567,6 @@ func (r *Room) cleanupIfIdle(ttl time.Duration) {
 	r.originServerNS = 0
 	r.originSample = 0
 	r.listenerStats = make(map[uint64]listenerStat)
+	r.commonDelayNS = r.defaultDelayNS
 	r.lastDelayAdjustNS = 0
 }
