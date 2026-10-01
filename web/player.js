@@ -15,11 +15,63 @@ let audio=null,node=null,decoder=null,sabWriter=null,joined=false,hostOnline=fal
 let roomDNeedsAuthoritativeSnap=true;
 let fallbackPlayback=false,fallbackNextTargetFrame=null,decodedAudibleSince=null;
 let sampleRate=48000,channels=2,codec='opus',lastEpoch=null,lastSeq=null,lastOutputLatency=null;
-const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
+const metrics={rttMs:null,clockOffsetMs:null,clockDriftPpm:null,clockConfidenceMs:null,bufferMs:0,targetDelayMs:400,recommendedDelayMs:400,lateFrames:0,decoderMs:0,decodedRmsDb:-120,decodedPeakDb:-120,outputRmsDb:-120,outputPeakDb:-120,workletActive:false,scheduledFrames:0,fallbackPlayback:false,playoutGate:'starting',faultCode:'STARTING',faultMessage:'Starting guest pipeline',faultAction:'Wait for the room to connect.',selfHeals:0,underruns:0,resamplerPpm:0,hardResyncs:0,outputLatencyMs:null,baseLatencyMs:null,reconnects:0,overruns:0,staleDrops:0,decoder:'starting',audioState:'none',epoch:null,seq:null,serverInstanceId:null,serverRestarts:0,crossOriginIsolated:!!self.crossOriginIsolated};
 self.__JLS_METRICS__=metrics;
 
 function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
 function note(s){ui.note.textContent=s}
+
+function repairJoinState(){
+  if(joined||!audio||!node||audio.state!=='running')return false;
+  joined=true;
+  metrics.selfHeals++;
+  metrics.playoutGate='audio join auto-recovered';
+  ui.join.disabled=true;
+  ui.join.textContent='LISTENING';
+  if(hostOnline)setState('Listening','ok');
+  note('Audio join state recovered automatically. Live playback is starting.');
+  return true;
+}
+
+function diagnosePipeline(){
+  const wsOpen=!!ws&&ws.readyState===WebSocket.OPEN;
+  const decodedAudible=metrics.decodedRmsDb>-70;
+  const outputAudible=metrics.outputRmsDb>-90||metrics.workletActive;
+
+  let code='OK',message='Live audio pipeline is healthy.',action='No action needed.';
+
+  if(!room){
+    code='INVALID_LINK';message='Guest room token is missing.';action='Open a fresh guest link from the host.';
+  }else if(!wsOpen){
+    code='RELAY_DISCONNECTED';message='Browser is not connected to the relay.';action='Check network access and wait for reconnect.';
+  }else if(!hostOnline){
+    code='HOST_OFFLINE';message='Relay is connected but the host is offline.';action='Start Jawahar Live Sync on the host phone.';
+  }else if(metrics.decoder==='opus-unavailable'){
+    code='DECODER_UNAVAILABLE';message='Opus decoder could not start.';action='Reload the page or use a current Chrome/Edge/Firefox browser.';
+  }else if(metrics.decoder==='starting'){
+    code='DECODER_STARTING';message='Audio decoder is still starting.';action='Wait a moment.';
+  }else if(!decodedAudible){
+    code='NO_HOST_AUDIO';message='Packets are arriving, but decoded audio is silent.';action='Play audible media on the host and verify CAPTURE_OK / non-zero dBFS.';
+  }else if(!audio||!node){
+    code='AUDIO_ENGINE_NOT_READY';message='Decoded audio exists but the browser audio engine is not ready.';action='Tap TO LISTEN once; if needed reload the page.';
+  }else if(audio.state!=='running'){
+    code='AUDIO_GESTURE_REQUIRED';message='Decoded audio exists but browser playback is '+audio.state+'.';action='Tap RESUME LISTENING / TAP TO LISTEN.';
+  }else if(!joined){
+    code='JOIN_STATE_STUCK';message='Browser audio is running but the join state is stuck.';action='Automatic repair is being attempted now.';
+  }else if(!clock.ready){
+    code='CLOCK_CALIBRATING';message='Audio is decoded and joined; the synchronization clock is still calibrating.';action='Wait briefly; safe local playback will engage if needed.';
+  }else if(metrics.scheduledFrames===0){
+    code='SCHEDULER_BLOCKED';message='Audio is decoded but no PCM frames have reached the output scheduler.';action='Automatic safe-playback recovery is being attempted.';
+  }else if(!outputAudible&&decodedAudible){
+    code='OUTPUT_SILENT';message='Audio is decoded and scheduled, but the browser output is silent.';action='Automatic safe local playback is being attempted; also check device volume/output route.';
+  }else if(metrics.fallbackPlayback){
+    code='SAFE_LOCAL';message='Audio is playing in safe local mode while precision sync recovers.';action='Keep listening; precision mode will remain secondary to continuity.';
+  }
+
+  metrics.faultCode=code;metrics.faultMessage=message;metrics.faultAction=action;
+  return {code,message,action};
+}
+
 function wsURL(){
   const base=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;
   const u=new URL(base+'/v1/ws/guest/'+encodeURIComponent(room));
@@ -196,7 +248,13 @@ function onDecoded(m){
   if(metrics.decodedRmsDb>-70){
     if(decodedAudibleSince==null)decodedAudibleSince=performance.now();
   }else decodedAudibleSince=null;
-  if(!joined||!node||!audio){metrics.playoutGate='waiting for audio join';return;}
+
+  // A browser can report a running AudioContext while the UI/join flag missed
+  // the transition. Do not throw away decoded audio in that contradictory state.
+  repairJoinState();
+
+  if(!audio||!node){metrics.playoutGate='audio engine not ready';return;}
+  if(!joined){metrics.playoutGate='waiting for audio join';return;}
   if(audio.state!=='running'){metrics.playoutGate='AudioContext '+audio.state;return;}
   const gateNow=performance.now();
   if(!clock.ready){
@@ -280,7 +338,13 @@ async function unlock(){
   catch(e){ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';setState('Tap required','warn');note('Audio could not start: '+(e?.message||e))}
 }
 ui.join.addEventListener('click',unlock);
-ensureAudio().then(()=>{if(audio.state==='running'){joined=true;ui.join.disabled=true;ui.join.textContent='LISTENING'}else{ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN'}}).catch(()=>{ui.join.disabled=false});
+ensureAudio().then(()=>{
+  if(audio.state==='running'){
+    repairJoinState();
+  }else{
+    joined=false;ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN';
+  }
+}).catch(()=>{joined=false;ui.join.disabled=false;ui.join.textContent='TAP TO LISTEN'});
 
 function resumeVisible(){
   if(!joined||!audio)return;
@@ -300,8 +364,20 @@ function sendStats(){
 }
 function fmt(v){return Number.isFinite(v)?v.toFixed(1):'—'}
 function render(){
+  repairJoinState();
+  const diagnosis=diagnosePipeline();
   const c=clock.snapshot();
+  const wsOk=!!ws&&ws.readyState===WebSocket.OPEN;
+  const decodeOk=metrics.decoder!=='starting'&&metrics.decoder!=='opus-unavailable'&&metrics.decodedRmsDb>-70;
+  const audioOk=!!audio&&!!node&&audio.state==='running'&&joined;
+  const scheduleOk=metrics.scheduledFrames>0;
+  const outputOk=metrics.outputRmsDb>-90||metrics.workletActive;
   ui.diag.textContent=[
+    'DIAGNOSIS: '+diagnosis.code,
+    'Cause: '+diagnosis.message,
+    'Action: '+diagnosis.action,
+    'Pipeline: relay '+(wsOk?'✓':'✗')+' | host '+(hostOnline?'✓':'✗')+' | decode '+(decodeOk?'✓':'✗')+' | audio '+(audioOk?'✓':'✗')+' | schedule '+(scheduleOk?'✓':'✗')+' | output '+(outputOk?'✓':'✗'),
+    'Self-heals: '+metrics.selfHeals,
     'RTT(min): '+fmt(metrics.rttMs)+' ms',
     'Clock offset(now): '+fmt(metrics.clockOffsetMs)+' ms',
     'Clock drift: '+fmt(metrics.clockDriftPpm)+' ppm',
@@ -324,4 +400,13 @@ function render(){
     'Clock samples: '+(c?.accepted??0)+'/'+(c?.total??0)
   ].join('\n');
 }
-setInterval(sendStats,2000);setInterval(render,500);render();connect();
+setInterval(sendStats,2000);
+setInterval(()=>{
+  render();
+  if(metrics.faultCode&&metrics.faultCode!=='OK'&&metrics.faultCode!=='SAFE_LOCAL'&&metrics.faultCode!=='DECODER_STARTING'){
+    if(!ui.note.textContent.includes(metrics.faultCode)){
+      ui.note.textContent=metrics.faultCode+': '+metrics.faultMessage+' '+metrics.faultAction;
+    }
+  }
+},500);
+render();connect();
