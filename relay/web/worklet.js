@@ -22,6 +22,7 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
     this.fadeFrames=Math.max(32,Math.round(sampleRate*.010));
     this.tailL=new Float32Array(this.fadeFrames); this.tailR=new Float32Array(this.fadeFrames); this.tailWrite=0;
     this.crossfade=null;
+    this.levelSumSq=0;this.levelPeak=0;this.levelSamples=0;
     this.port.onmessage=e=>this.onMessage(e.data||{});
   }
 
@@ -155,7 +156,9 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
         l=this.crossfade.l[x]*(1-a)+l*a;r=this.crossfade.r[x]*(1-a)+r*a;
         if(this.crossfade.pos>=this.fadeFrames)this.crossfade=null;
       }
-      L[i]=l;R[i]=r;wroteAudio=true;this.pushTail(l,r);
+      L[i]=l;R[i]=r;wroteAudio=true;
+      this.levelSumSq+=l*l+r*r;this.levelPeak=Math.max(this.levelPeak,Math.abs(l),Math.abs(r));this.levelSamples+=2;
+      this.pushTail(l,r);
       const nominal=this.sourceRate/sampleRate;
       this.pos+=nominal*(1+this.controller.ppm/1e6);
       if(this.pos>=this.active.frames)this.finishActive();
@@ -164,7 +167,10 @@ class JawaharSyncProcessor extends AudioWorkletProcessor {
       this.lastMetricFrame=currentFrame;
       let queued=this.active?Math.max(0,this.active.frames-this.pos):0;
       for(const b of this.queue)queued+=b.frames;
-      this.port.postMessage({type:'metrics',bufferFrames:queued,bufferMs:queued*1000/this.sourceRate,ppm:this.controller.ppm,underruns:this.underruns,lateFrames:this.lateFrames,hardResyncs:this.hardResyncs,overruns:this.overruns,active:wroteAudio});
+      const rms=this.levelSamples?Math.sqrt(this.levelSumSq/this.levelSamples):0;
+      const db=v=>v>1e-6?Math.max(-120,20*Math.log10(v)):-120;
+      this.port.postMessage({type:'metrics',bufferFrames:queued,bufferMs:queued*1000/this.sourceRate,ppm:this.controller.ppm,underruns:this.underruns,lateFrames:this.lateFrames,hardResyncs:this.hardResyncs,overruns:this.overruns,active:wroteAudio,outputRmsDb:db(rms),outputPeakDb:db(this.levelPeak)});
+      this.levelSumSq=0;this.levelPeak=0;this.levelSamples=0;
     }
     return true;
   }
