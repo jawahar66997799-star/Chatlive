@@ -193,6 +193,21 @@ function observeServerInstance(id){
   return true;
 }
 
+function stopTransportWatch(){clearInterval(transportWatchTimer);transportWatchTimer=null}
+function startTransportWatch(){
+  stopTransportWatch();
+  transportWatchTimer=setInterval(()=>{
+    if(!ws||ws.readyState!==WebSocket.OPEN)return;
+    const age=performance.now()-lastWsRxAt;metrics.lastRxAgeMs=age;
+    if(lastWsRxAt>0&&age>TRANSPORT_STALL_MS){
+      metrics.transportGap=true;
+      setState('Reconnecting…','warn');
+      note('Transport stalled; reconnecting automatically while buffered audio continues.');
+      try{ws.close(4002,'transport watchdog')}catch{}
+    }
+  },1000);
+}
+
 function connect(force=false){
   clearTimeout(reconnectTimer);
   if(!room){setState('Invalid guest link','bad');note('Ask the host for a fresh Jawahar Live Sync link.');ui.join.disabled=true;return;}
@@ -201,6 +216,7 @@ function connect(force=false){
   generation++;const gen=generation;
   clock.reset();pings.clear();
   metrics.rttMs=null;metrics.clockOffsetMs=null;metrics.clockDriftPpm=null;metrics.clockConfidenceMs=null;
+  metrics.transportGap=true;
   setState(ws?'Reconnecting…':'Connecting…','warn');
   try{ws=new WebSocket(wsURL())}catch{scheduleReconnect();return}
   ws.binaryType='arraybuffer';
@@ -296,7 +312,7 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     for(let i=0;i<m.frames;i++){l[i]=m.pcm[i*2]||0;r[i]=m.pcm[i*2+1]||0}
     const src=audio.createBufferSource();src.buffer=buffer;src.connect(ensureDirectGain());
     const now=audio.currentTime;
-    if(!Number.isFinite(directNextTime)||directNextTime<now+.025)directNextTime=now+.060;
+    if(!Number.isFinite(directNextTime)||directNextTime<now+.050)directNextTime=now+.140;
     const start=directNextTime;directNextTime+=m.frames/sourceRate;
     directSources.add(src);metrics.directSources=directSources.size;metrics.directPlayback=true;metrics.directScheduledFrames++;
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
@@ -322,6 +338,15 @@ function enterSafeLocal(reason){
 
 function exitSafeLocalForPrecision(targetPerf,reason='clock/timeline recovered'){
   const now=performance.now();
+  if(metrics.directPlayback&&directGain&&audio){
+    try{
+      const t=audio.currentTime;
+      directGain.gain.cancelScheduledValues(t);
+      directGain.gain.setValueAtTime(directGain.gain.value,t);
+      directGain.gain.linearRampToValueAtTime(0,t+.06);
+      setTimeout(()=>stopDirectPlayback(),90);
+    }catch{stopDirectPlayback()}
+  }
   fallbackPlayback=false;metrics.fallbackPlayback=false;fallbackNextTargetFrame=null;
   fallbackEnteredAt=null;lastPrecisionRecoveryAttempt=now;
   precisionRecoveryGraceUntil=now+Math.max(1200,(Number.isFinite(targetPerf)?Math.max(0,targetPerf-now):0)+700);
@@ -517,13 +542,18 @@ ensureAudio().then(()=>{
 
 function resumeVisible(){
   if(!joined||!audio)return;
-  audio.resume().then(()=>{if(audio.state!=='running')throw new Error('gesture');resetPlayout('resume');setState(hostOnline?'Buffering…':'Host offline',hostOnline?'warn':'bad')})
+  const wasRunning=audio.state==='running';
+  audio.resume().then(()=>{
+    if(audio.state!=='running')throw new Error('gesture');
+    if(!wasRunning)resetPlayout('resume');
+    setState(hostOnline?'Listening':'Host offline',hostOnline?'ok':'bad')
+  })
   .catch(()=>{ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Tap to resume','warn')});
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeVisible();else if(joined)note('Background/lock-screen playback depends on the browser and OS; alignment will be rechecked on return.')});
 document.addEventListener('freeze',()=>{try{ws?.close(4000,'page frozen')}catch{}});
 document.addEventListener('resume',()=>{connect(true);resumeVisible()});
-window.addEventListener('online',()=>connect());window.addEventListener('offline',()=>setState('Network offline','bad'));
+window.addEventListener('online',()=>connect(true));window.addEventListener('offline',()=>{metrics.transportGap=true;setState('Network offline','bad')});
 try{navigator.mediaDevices?.addEventListener?.('devicechange',()=>{outputMap=new OutputTimeMapper();sampleOutputClock();if(joined){node?.port.postMessage({type:'reset'});timeline.reset();metrics.hardResyncs++}})}catch{}
 
 function sendStats(){
