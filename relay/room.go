@@ -216,7 +216,6 @@ func (r *Room) acceptFrame(f *AudioFrame, serverNS uint64) error {
 			g.dropped.Add(1)
 			r.metrics.backpressureDrops.Add(1)
 			g.closed.Store(true)
-			_ = g.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1013, "slow consumer; reconnect"), time.Now().Add(250*time.Millisecond))
 			_ = g.conn.Close()
 		}
 	}
@@ -258,6 +257,8 @@ func (r *Room) addGuest(g *guestConn, nowNS uint64, resumeEpoch, resumeSeq uint6
 
 	state, startSeq := r.stateLocked(nowNS, resumeEpoch, resumeSeq, hasResume)
 	if !enqueue(g, outbound{kind: outboundText, data: encodeJSON(state)}) {
+		delete(r.guests, g)
+		r.metrics.guestsCurrent.Add(-1)
 		return errors.New("guest queue full during state")
 	}
 
@@ -267,6 +268,8 @@ func (r *Room) addGuest(g *guestConn, nowNS uint64, resumeEpoch, resumeSeq uint6
 				continue
 			}
 			if !enqueue(g, outbound{kind: outboundBinary, data: f.Raw}) {
+				delete(r.guests, g)
+				r.metrics.guestsCurrent.Add(-1)
 				return errors.New("guest queue full during ring replay")
 			}
 		}
@@ -305,25 +308,38 @@ func (r *Room) stateLocked(nowNS uint64, resumeEpoch, resumeSeq uint64, hasResum
 		earliest = r.ring[0].Sequence
 		head = r.ring[len(r.ring)-1].Sequence
 
-		if hasResume && resumeEpoch == r.epoch && resumeSeq < head && (resumeSeq >= earliest || resumeSeq+1 == earliest) {
-			startSeq = resumeSeq + 1
-		} else {
-			threshold := nowNS + r.joinGuardNS
-			startSeq = head + 1
-			for _, f := range r.ring {
-				deadline := f.NominalServerNS + r.commonDelayNS
-				if deadline >= threshold {
-					startSeq = f.Sequence
-					startDeadline = deadline
-					break
-				}
+		// The baseline start point is the first frame whose common playout
+		// deadline is still safely in the future. This prevents both late join
+		// and reconnect from replaying stale audio simply because it remains in
+		// the bounded retransmission ring.
+		threshold := nowNS + r.joinGuardNS
+		futureSeq := head + 1
+		futureDeadline := uint64(0)
+		for _, f := range r.ring {
+			deadline := f.NominalServerNS + r.commonDelayNS
+			if deadline >= threshold {
+				futureSeq = f.Sequence
+				futureDeadline = deadline
+				break
 			}
 		}
-		if startDeadline == 0 {
-			for _, f := range r.ring {
-				if f.Sequence == startSeq {
-					startDeadline = f.NominalServerNS + r.commonDelayNS
-					break
+		startSeq = futureSeq
+		startDeadline = futureDeadline
+
+		if hasResume && resumeEpoch == r.epoch && resumeSeq < head {
+			candidate := resumeSeq + 1
+			if candidate < earliest {
+				candidate = earliest
+			}
+			// Resume may advance beyond the future baseline, but never behind
+			// it. Missed audio whose common deadline has passed is discarded.
+			if candidate >= futureSeq && candidate <= head {
+				startSeq = candidate
+				for _, f := range r.ring {
+					if f.Sequence == startSeq {
+						startDeadline = f.NominalServerNS + r.commonDelayNS
+						break
+					}
 				}
 			}
 		}
