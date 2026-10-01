@@ -1,8 +1,6 @@
 6ae2daf92d73e912aef033d56ce374df997ae0ad1d88ca9ef76f0c11123aae27  ./LICENSE.txt
-c348e1baa7280129ebb3b6f7545ee1aa356d2e9d96d268ae2af979fcf3ece5fb  ./discordjs.d.ts
-e9d975df7ded00e7bac16ff5d5bd1a56ccc76e02e2b7539c2d19b8865162cee4  ./discordjs.d.ts.map
-3676355bf220c4109cb1c4e860ce07be47f589db574f4757e1b4d7b97cb8831c  ./discordjs.js
+7954617e3c311444a02444c4d58661ea8b0885b9c3032cbca2493baf91f73d63  ./PACKAGE_METADATA.json
+e1aa9531a6cd740a76f54a06903d76dbec8b218307030c8444f2570932fafec8  ./THIRD_PARTY_NOTICES.md
 1f76829582c5bd882c323a5e9427f3e905fbda22ef328736c07e3a9a155f4250  ./generated/libopus.generated.mjs
-e5f3b79bbd506a7d32337a3064328ae6332db2027bdcf81b8def742b81f3112e  ./index.d.ts
-a7f67e3bdcc8ef172b938995fbef9dedac594cf3d58eb7f6c5eb485b4145d0d0  ./index.d.ts.map
+02b9a9c8eea04692d0a32d7e2e64143064d4a78c75de3ae469f60d919b8ab4da  ./generated/libopus.generated.wasm
 ccd6b085965918767cdbe9171935e670c6f177962d9729f2e7998777c819d768  ./index.js

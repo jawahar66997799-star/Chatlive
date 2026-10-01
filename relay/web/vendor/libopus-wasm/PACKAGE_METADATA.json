@@ -1,0 +1,17 @@
+{
+  "name": "libopus-wasm",
+  "version": "0.4.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openclaw/libopus-wasm.git"
+  },
+  "browserRuntimeFiles": [
+    "index.js",
+    "generated/libopus.generated.mjs"
+  ],
+  "wasmPackaging": "inline in generated/libopus.generated.mjs",
+  "wasmAuditSidecar": "generated/libopus.generated.wasm",
+  "wasmAuditSidecarRuntimeRequired": false,
+  "generatedFrom": "npm pack libopus-wasm@0.4.1"
+}
