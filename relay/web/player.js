@@ -45,8 +45,8 @@ function repairJoinState(){
   metrics.selfHeals++;
   metrics.playoutGate='audio join auto-recovered';
   ui.join.disabled=true;
-  ui.join.textContent='LISTENING';
-  if(hostOnline)setState('Listening','ok');
+  ui.join.textContent='AUDIO ENABLED';
+  if(hostOnline)showContinuityState(true);
   note('Audio join state recovered automatically. Live playback is starting.');
   return true;
 }
@@ -157,7 +157,7 @@ async function ensureAudio(){
   audio.addEventListener('statechange',()=>{
     metrics.audioState=audio.state;
     if((audio.state==='suspended'||audio.state==='interrupted')&&joined){ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Playback interrupted','bad')}
-    else if(audio.state==='running'&&joined&&hostOnline)setState('Listening','ok');
+    else if(audio.state==='running'&&joined&&hostOnline)showContinuityState(true);
   });
 }
 
@@ -312,19 +312,18 @@ function onControl(text){
     return;
   }
   if(m.type==='hello'){
-    hostOnline=!!m.hostOnline;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
+    hostOnline=!!m.hostOnline;relayStreamState=hostOnline?'AUDIO_FLOWING':'CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;sampleRate=Number(m.sampleRate)||48000;channels=Number(m.channels)||2;codec=m.codec||'pcm16le';
     const d=Math.max(150,Math.min(1000,Number(m.targetDelayMs)||400));roomD.reset(d,performance.now());roomDNeedsAuthoritativeSnap=false;
     decoder.postMessage({type:'init',codec,sampleRate,channels,wasmUrl:'/vendor/libopus-wasm/index.js'});node?.port.postMessage({type:'config',sourceRate:sampleRate});
-    if(!hostOnline)setState('Host offline','bad');
-    else if(joined)setState((metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'Listening':'Preparing audio…',(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'ok':'warn');
-    else setState('Host online','ok');
+    if(!hostOnline)showContinuityState(false);
+    else if(joined)showContinuityState(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40);
+    else showContinuityState(false);
     return;
   }
-  if(m.type==='host-offline'){hostOnline=false;resetPlayout('host-offline');setState('Host offline','bad')}
+  if(m.type==='host-offline'){hostOnline=false;relayStreamState='CONNECTED_NO_HOST';metrics.relayStreamState=relayStreamState;resetPlayout('host-offline');showContinuityState(false)}
   if(m.type==='host-online'){
-    hostOnline=true;
-    if(joined)setState((metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'Listening':'Preparing audio…',(metrics.directPlayback||metrics.workletActive||metrics.bufferMs>40||metrics.scheduledFrames>0)?'ok':'warn');
-    else setState('Host online','ok');
+    hostOnline=true;relayStreamState='HOST_CONNECTED_NO_AUDIO';metrics.relayStreamState=relayStreamState;
+    showContinuityState(false);
   }
 }
 
@@ -356,7 +355,7 @@ function scheduleDirectBuffer(m,reason='worklet unavailable'){
     src.onended=()=>{directSources.delete(src);metrics.directSources=directSources.size;try{src.disconnect()}catch{}};
     src.start(start);
     metrics.playoutGate='DIRECT BUFFER playing: '+reason;
-    if(hostOnline)setState('Listening · compatibility mode','ok');
+    if(hostOnline)showContinuityState(true,' · compatibility mode');
     return true;
   }catch(err){
     metrics.schedulerErrors++;metrics.lastSchedulerError='direct-buffer: '+String(err?.message||err);
@@ -431,7 +430,7 @@ function scheduleSafeLocal(m,reason='watchdog'){
     metrics.scheduledFrames++;
     lastEpoch=String(m.epoch);lastSeq=String(m.seq);
     metrics.playoutGate='SAFE LOCAL direct playback';
-    if(hostOnline)setState('Listening · continuity mode','ok');
+    if(hostOnline)showContinuityState(true,' · continuity mode');
   }
   return ok;
 }
@@ -553,7 +552,7 @@ function onDecoded(m){
   }else node.port.postMessage({type:'pcm',...meta,pcm:m.pcm},[m.pcm.buffer]);
   metrics.scheduledFrames++;
   metrics.playoutGate='precision scheduled';
-  if(hostOnline&&audio.state==='running')setState('Listening','ok');
+  if(hostOnline&&audio.state==='running')showContinuityState(true);
 }
 
 function bestFallbackLatency(){const o=Number(audio?.outputLatency),b=Number(audio?.baseLatency);if(Number.isFinite(o)&&o>0)return o;if(Number.isFinite(b)&&b>0)return b;return 0}
@@ -585,9 +584,9 @@ function onWorklet(m){
       forceContinuityOnNextPcm=true;
       metrics.underrunBursts++;
       metrics.selfHeals++;
-      setState('Listening · continuity recovery','ok');
+      showContinuityState(true,' · continuity recovery');
     }else if(hostOnline&&joined){
-      setState('Listening','ok');
+      showContinuityState(true);
     }
   }
   else if(m.type==='late'){metrics.lateFrames=m.count;suggestedD.markLate(performance.now(),Math.abs(m.errorMs||0))}
@@ -622,7 +621,7 @@ function resumeVisible(){
   audio.resume().then(()=>{
     if(audio.state!=='running')throw new Error('gesture');
     if(!wasRunning)resetPlayout('resume');
-    setState(hostOnline?'Listening':'Host offline',hostOnline?'ok':'bad')
+    showContinuityState(hostOnline&&audio.state==='running')
   })
   .catch(()=>{ui.join.disabled=false;ui.join.textContent='RESUME LISTENING';setState('Tap to resume','warn')});
 }
@@ -661,7 +660,8 @@ function render(){
     'DIAGNOSIS: '+diagnosis.code,
     'Cause: '+diagnosis.message,
     'Action: '+diagnosis.action,
-    'Pipeline: relay '+(wsOk?'✓':'✗')+' | host '+(hostOnline?'✓':'✗')+' | decode '+(decodeOk?'✓':'✗')+' | audio '+(audioOk?'✓':'✗')+' | schedule '+(scheduleOk?'✓':'✗')+' | output '+(outputOk?'✓':'✗'),
+    'Pipeline: relay '+(wsOk?'✓':'✗')+' | host '+(hostOnline?'✓':'✗')+' | stream '+relayStreamState+' | decode '+(decodeOk?'✓':'✗')+' | audio '+(audioOk?'✓':'✗')+' | schedule '+(scheduleOk?'✓':'✗')+' | output '+(outputOk?'✓':'✗'),
+    'Host capture: '+(hostCaptureState||'—'),
     'Self-heals: '+metrics.selfHeals,
     'RTT(min): '+fmt(metrics.rttMs)+' ms',
     'Clock offset(now): '+fmt(metrics.clockOffsetMs)+' ms',
@@ -693,7 +693,7 @@ function render(){
 setInterval(sendStats,2000);
 setInterval(()=>{
   render();
-  if(metrics.faultCode&&metrics.faultCode!=='OK'&&metrics.faultCode!=='SAFE_LOCAL'&&metrics.faultCode!=='DECODER_STARTING'){
+  if(metrics.faultCode&&metrics.faultCode!=='LIVE'&&metrics.faultCode!=='SAFE_LOCAL'&&metrics.faultCode!=='DECODER_STARTING'){
     if(!ui.note.textContent.includes(metrics.faultCode)){
       ui.note.textContent=metrics.faultCode+': '+metrics.faultMessage+' '+metrics.faultAction;
     }
