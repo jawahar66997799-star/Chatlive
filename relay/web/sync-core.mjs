@@ -199,7 +199,7 @@ export class AdaptiveDelay {
 }
 
 export class PIController {
-  constructor({ deadbandMs=1, kpPpmPerMs=18, kiPpmPerMsS=0.35, maxPpm=350, integralLimitMsS=500 } = {}) {
+  constructor({ deadbandMs=1, kpPpmPerMs=18, kiPpmPerMsS=0.35, maxPpm=300, integralLimitMsS=500 } = {}) {
     Object.assign(this,{deadbandMs,kpPpmPerMs,kiPpmPerMsS,maxPpm,integralLimitMsS});
     this.integral = 0; this.lastPpm=0;
   }
