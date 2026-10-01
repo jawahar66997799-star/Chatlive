@@ -116,3 +116,17 @@ assert.match(player,/function scheduleDirectBuffer/);
 assert.match(player,/DIRECT BUFFER playing/);
 assert.match(player,/sabWriter\.write\(m\.pcm,meta\)/);
 assert.match(worklet,/processQuanta/);
+
+
+assert.match(player,/function startTransportWatchdog/);
+assert.match(player,/relayAge>5500/);
+assert.match(player,/Math\.min\(2000/);
+assert.match(player,/transportWatchdogReconnects/);
+assert.match(player,/Transport age: relay/);
+assert.match(player,/SAFE LOCAL must be an independent continuity path/);
+assert.match(player,/const ok=scheduleDirectBuffer\(m,reason\)/);
+assert.doesNotMatch(
+  player,
+  /function scheduleSafeLocal[\s\S]*?sabWriter\.write\(m\.pcm,meta\)/,
+  'safe-local continuity path must not depend on the precision AudioWorklet/SAB scheduler'
+);
