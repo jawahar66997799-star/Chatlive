@@ -44,6 +44,6 @@ jobs:
       - name: Build relay and synthetic probe
         working-directory: relay
         run: |
-          go mod download
+          go mod tidy
           go test ./...
           go build ./cmd/jlsprobe
