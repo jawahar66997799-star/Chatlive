@@ -14,11 +14,11 @@ set -euo pipefail
 #
 # Every command injects a failure; it does not claim a measured result.
 
-MODE="\${1:-}"
-CASE="\${2:-}"
-IFACE="\${IFACE:-eth0}"
+MODE="${1:-}"
+CASE="${2:-}"
+IFACE="${IFACE:-eth0}"
 ADB=(adb)
-if [[ -n "\${SERIAL:-}" ]]; then ADB+=( -s "$SERIAL" ); fi
+if [[ -n "${SERIAL:-}" ]]; then ADB+=( -s "$SERIAL" ); fi
 
 clear_netem() {
   tc qdisc del dev "$IFACE" root 2>/dev/null || true
@@ -34,7 +34,7 @@ apply_netem() {
     jitter200)  tc qdisc add dev "$IFACE" root netem delay 120ms 200ms distribution normal ;;
     asym-up)    tc qdisc add dev "$IFACE" root netem delay 180ms 20ms ;;
     outage500|outage1000|outage3000)
-      local ms="\${1#outage}"
+      local ms="${1#outage}"
       tc qdisc add dev "$IFACE" root netem loss 100%
       python3 - "$ms" <<'PY'
 import sys,time
@@ -51,39 +51,39 @@ android_case() {
   local c="$1"
   case "$c" in
     wifi500|wifi1000|wifi3000)
-      local ms="\${c#wifi}"
-      "\${ADB[@]}" shell svc wifi disable
+      local ms="${c#wifi}"
+      "${ADB[@]}" shell svc wifi disable
       python3 - "$ms" <<'PY'
 import sys,time
 time.sleep(float(sys.argv[1])/1000.0)
 PY
-      "\${ADB[@]}" shell svc wifi enable
+      "${ADB[@]}" shell svc wifi enable
       ;;
     wifi-to-cell)
-      "\${ADB[@]}" shell svc data enable || true
-      "\${ADB[@]}" shell svc wifi disable
+      "${ADB[@]}" shell svc data enable || true
+      "${ADB[@]}" shell svc wifi disable
       echo "Wi-Fi disabled; verify cellular route and public IP changed, then re-enable Wi-Fi manually."
       ;;
     ip-change)
-      "\${ADB[@]}" shell svc wifi disable
+      "${ADB[@]}" shell svc wifi disable
       sleep 2
-      "\${ADB[@]}" shell svc wifi enable
+      "${ADB[@]}" shell svc wifi enable
       echo "Reconnect to a different AP/VPN/NAT if a guaranteed public IP change is required."
       ;;
     home)
-      "\${ADB[@]}" shell input keyevent KEYCODE_HOME
+      "${ADB[@]}" shell input keyevent KEYCODE_HOME
       ;;
     lock)
-      "\${ADB[@]}" shell input keyevent KEYCODE_POWER
+      "${ADB[@]}" shell input keyevent KEYCODE_POWER
       ;;
     youtube-pause)
-      "\${ADB[@]}" shell input keyevent KEYCODE_MEDIA_PAUSE
+      "${ADB[@]}" shell input keyevent KEYCODE_MEDIA_PAUSE
       ;;
     youtube-resume)
-      "\${ADB[@]}" shell input keyevent KEYCODE_MEDIA_PLAY
+      "${ADB[@]}" shell input keyevent KEYCODE_MEDIA_PLAY
       ;;
     youtube-next)
-      "\${ADB[@]}" shell input keyevent KEYCODE_MEDIA_NEXT
+      "${ADB[@]}" shell input keyevent KEYCODE_MEDIA_NEXT
       ;;
     youtube-seek)
       echo "Seek is intentionally manual: open YouTube and move the scrubber while capture/stream logs are running."
@@ -102,15 +102,15 @@ PY
 }
 
 local_relay_restart() {
-  local pid="\${RELAY_PID:-}"
-  local cmd="\${RELAY_CMD:-go run .}"
+  local pid="${RELAY_PID:-}"
+  local cmd="${RELAY_CMD:-go run .}"
   if [[ -z "$pid" ]]; then
     echo "Set RELAY_PID to the local relay PID; optional RELAY_CMD controls restart command." >&2
     exit 2
   fi
   kill "$pid" || true
   sleep 1
-  (cd "\${RELAY_DIR:-relay}" && nohup bash -lc "$cmd" > /tmp/jls-relay-restart.log 2>&1 &)
+  (cd "${RELAY_DIR:-relay}" && nohup bash -lc "$cmd" > /tmp/jls-relay-restart.log 2>&1 &)
   echo "Local relay restarted. Guest probe should reconnect automatically; host probe must be restarted/reconnected separately."
 }
 
