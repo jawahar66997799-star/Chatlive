@@ -3,16 +3,44 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun buildConfigString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
 android {
     namespace = "com.jawahar.livesync"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.jawahar.livesync"
         minSdk = 29
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-phase0"
+        targetSdk = 36
+        versionCode = 2
+        versionName = "0.2.0-host-stream"
+
+        buildConfigField(
+            "String",
+            "DEFAULT_RELAY_URL",
+            buildConfigString(providers.gradleProperty("JLS_RELAY_URL").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_ROOM",
+            buildConfigString(providers.gradleProperty("JLS_ROOM").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_HOST_TOKEN",
+            buildConfigString(providers.gradleProperty("JLS_HOST_TOKEN").orElse("").get())
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_GUEST_BASE_URL",
+            buildConfigString(providers.gradleProperty("JLS_GUEST_BASE_URL").orElse("").get())
+        )
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
@@ -29,6 +57,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -36,4 +68,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
+
+    testImplementation("junit:junit:4.13.2")
 }

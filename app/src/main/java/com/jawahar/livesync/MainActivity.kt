@@ -11,7 +11,9 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -25,27 +27,40 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
-    private lateinit var status: TextView
+    private lateinit var captureStatus: TextView
+    private lateinit var relayStatus: TextView
     private lateinit var meter: ProgressBar
+    private lateinit var roomText: TextView
+    private lateinit var guestUrlText: TextView
+    private lateinit var stats: TextView
     private lateinit var detail: TextView
     private lateinit var startStop: Button
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             val micOk = grants[Manifest.permission.RECORD_AUDIO] == true ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-            if (micOk) requestProjection() else renderError("RECORD_AUDIO is required for Android playback capture.")
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+            if (micOk) {
+                requestProjection()
+            } else {
+                renderError("RECORD_AUDIO permission is required for Android playback capture.")
+            }
         }
 
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode != Activity.RESULT_OK || result.data == null) {
-                renderError("Screen/audio capture permission was not granted.")
+                renderError("Android screen/audio capture consent was not granted.")
                 return@registerForActivityResult
             }
+
             val serviceIntent = Intent(this, CaptureService::class.java).apply {
                 action = CaptureService.ACTION_START
                 putExtra(CaptureService.EXTRA_RESULT_CODE, result.resultCode)
@@ -57,107 +72,224 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+
+        if (CaptureStateStore.state.value.health == CaptureHealth.IDLE &&
+            SessionState.consumeInterruptedSession(this)
+        ) {
+            CaptureStateStore.update(
+                CaptureSnapshot(
+                    health = CaptureHealth.RECOVERING,
+                    captureHealth = CaptureHealth.RECOVERING,
+                    relayState = RelayState.DISCONNECTED,
+                    detail = "A previous capture session ended with the app process. Android requires fresh MediaProjection consent; tap START."
+                )
+            )
+        }
+
         observeState()
     }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 48, 48, 48)
+            setPadding(44, 44, 44, 44)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        val title = TextView(this).apply {
+
+        root.addView(TextView(this).apply {
             text = "Jawahar Live Sync"
             textSize = 28f
-        }
-        val subtitle = TextView(this).apply {
-            text = "Phase 0 · YouTube internal-audio capture proof"
+        })
+
+        root.addView(TextView(this).apply {
+            text = "Host · YouTube playback capture + Opus uplink"
             textSize = 15f
-            setPadding(0, 10, 0, 36)
+            setPadding(0, 8, 0, 30)
+        })
+
+        captureStatus = TextView(this).apply {
+            textSize = 21f
+            text = "Capture: IDLE"
         }
-        status = TextView(this).apply {
-            textSize = 22f
-            text = "READY"
+        relayStatus = TextView(this).apply {
+            textSize = 17f
+            text = "Relay: DISABLED"
+            setPadding(0, 6, 0, 12)
         }
+
         meter = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             progress = 0
         }
-        detail = TextView(this).apply {
+
+        roomText = TextView(this).apply {
             textSize = 15f
-            setPadding(0, 18, 0, 24)
+            setPadding(0, 18, 0, 4)
+            text = "Room: —"
         }
+        guestUrlText = TextView(this).apply {
+            textSize = 14f
+            text = "Guest link: —"
+        }
+
+        stats = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 16, 0, 10)
+        }
+
+        detail = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 8, 0, 20)
+        }
+
         startStop = Button(this).apply {
-            text = "START SYNC TEST"
+            text = "START"
             setOnClickListener {
-                val running = CaptureStateStore.state.value.health !in setOf(
-                    CaptureHealth.IDLE, CaptureHealth.ERROR, CaptureHealth.PROJECTION_STOPPED
-                )
-                if (running) stopCapture() else ensurePermissionsThenStart()
+                if (isCaptureLikelyRunning(CaptureStateStore.state.value)) {
+                    stopCapture()
+                } else {
+                    ensurePermissionsThenStart()
+                }
             }
         }
+
         val openYouTube = Button(this).apply {
             text = "OPEN YOUTUBE"
             setOnClickListener {
                 val launch = packageManager.getLaunchIntentForPackage("com.google.android.youtube")
-                if (launch != null) startActivity(launch) else renderError("Official YouTube app was not found.")
+                if (launch != null) {
+                    startActivity(launch)
+                } else {
+                    renderError("Official YouTube app was not found.")
+                }
             }
         }
+
+        val shareGuest = Button(this).apply {
+            text = "SHARE GUEST LINK"
+            setOnClickListener { shareGuestLink() }
+        }
+
         val shareLog = Button(this).apply {
-            text = "SHARE LATEST LOG"
+            text = "SHARE LOG"
             setOnClickListener { shareLatestLog() }
         }
+
         val battery = Button(this).apply {
             text = "BATTERY SETTINGS"
             setOnClickListener {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (_: Throwable) {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                }
             }
         }
-        root.addView(title)
-        root.addView(subtitle)
-        root.addView(status)
-        root.addView(meter, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 40))
-        root.addView(detail, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(startStop, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(openYouTube, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(shareLog, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(battery, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        val scroll = ScrollView(this).apply { addView(root) }
-        setContentView(scroll)
+        val keepAwake = CheckBox(this).apply {
+            text = "Keep this screen awake while visible"
+            isChecked = false
+            setOnCheckedChangeListener { _, checked ->
+                if (checked) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+
+        val lockNote = TextView(this).apply {
+            textSize = 12f
+            text = "Android 15 QPR1+ stops MediaProjection when the device locks. Keep the phone unlocked during a live room unless real-device testing proves a supported alternative."
+            setPadding(0, 20, 0, 0)
+        }
+
+        root.addView(captureStatus)
+        root.addView(relayStatus)
+        root.addView(meter, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 40))
+        root.addView(roomText, matchWrap())
+        root.addView(guestUrlText, matchWrap())
+        root.addView(stats, matchWrap())
+        root.addView(detail, matchWrap())
+        root.addView(startStop, matchWrap())
+        root.addView(openYouTube, matchWrap())
+        root.addView(shareGuest, matchWrap())
+        root.addView(shareLog, matchWrap())
+        root.addView(battery, matchWrap())
+        root.addView(keepAwake, matchWrap())
+        root.addView(lockNote, matchWrap())
+
+        setContentView(ScrollView(this).apply { addView(root) })
     }
+
+    private fun matchWrap() = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    )
 
     private fun observeState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 CaptureStateStore.state.collect { s ->
-                    status.text = s.health.name
-                    val normalized = (((s.rmsDb + 60.0) / 60.0) * 100.0).roundToInt().coerceIn(0, 100)
+                    captureStatus.text = "Capture: " + s.health.name
+                    relayStatus.text = "Relay: " + s.relayState.name
+
+                    val normalized = (((s.rmsDb + 60.0) / 60.0) * 100.0)
+                        .roundToInt()
+                        .coerceIn(0, 100)
                     meter.progress = normalized
-                    detail.text = buildString {
-                        append("RMS: %.1f dBFS\n".format(s.rmsDb))
-                        append("Peak: %.1f dBFS\n".format(s.peakDb))
-                        append("Active media player: ${s.activePlayback}\n")
-                        append("Frames read: ${s.framesRead}\n")
-                        append("Read faults: ${s.droppedReads}\n")
-                        append("Running: ${s.secondsRunning}s\n")
-                        append(s.detail)
+
+                    roomText.text = "Room: " + s.room.ifBlank { "—" }
+                    guestUrlText.text = "Guest link: " + s.guestUrl.ifBlank { "—" }
+
+                    stats.text = buildString {
+                        append("Audio: ")
+                        append(String.format(Locale.US, "%.1f", s.rmsDb))
+                        append(" dBFS RMS · peak ")
+                        append(String.format(Locale.US, "%.1f", s.peakDb))
+                        append(" dBFS\n")
+                        append("Bitrate: ")
+                        append(if (s.bitrateBps > 0) "${s.bitrateBps / 1000} kbps" else "—")
+                        append(" · RTT: ")
+                        append(s.relayRttMs?.let { "${it} ms" } ?: "—")
+                        append("\nReconnects: ${s.reconnects} · send buffer: ${s.sendBufferDepth} frames")
+                        append("\nCaptured: ${s.framesCaptured} frames · encoded: ${s.packetsEncoded} packets")
+                        append("\nUploaded: ${s.bytesUploaded} B · dropped: ${s.droppedFrames}")
+                        append("\nEncode: ${s.encodeTimeUs} µs · battery: ")
+                        append(if (s.batteryPct >= 0) "${s.batteryPct}%" else "—")
+                        append(" · thermal: ${s.thermalStatus}")
                     }
-                    startStop.text = if (s.health in setOf(
-                            CaptureHealth.IDLE, CaptureHealth.ERROR, CaptureHealth.PROJECTION_STOPPED
-                        )) "START SYNC TEST" else "STOP"
+
+                    detail.text = s.detail
+                    startStop.text = if (isCaptureLikelyRunning(s)) "STOP" else "START"
                 }
             }
         }
     }
 
+    private fun isCaptureLikelyRunning(s: CaptureSnapshot): Boolean {
+        return s.secondsRunning > 0 &&
+            s.health !in setOf(
+                CaptureHealth.IDLE,
+                CaptureHealth.ERROR,
+                CaptureHealth.PROJECTION_STOPPED
+            )
+    }
+
     private fun ensurePermissionsThenStart() {
         val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+        if (Build.VERSION.SDK_INT >= 33) {
+            needed += Manifest.permission.POST_NOTIFICATIONS
+        }
         val missing = needed.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isEmpty()) requestProjection() else permissionLauncher.launch(missing.toTypedArray())
+
+        if (missing.isEmpty()) {
+            requestProjection()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
+        }
     }
 
     private fun requestProjection() {
@@ -171,30 +303,53 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopCapture() {
-        startService(Intent(this, CaptureService::class.java).apply { action = CaptureService.ACTION_STOP })
+        startService(Intent(this, CaptureService::class.java).apply {
+            action = CaptureService.ACTION_STOP
+        })
+    }
+
+    private fun shareGuestLink() {
+        val link = CaptureStateStore.state.value.guestUrl
+        if (link.isBlank()) {
+            renderError("Guest link is not available until the relay is configured.")
+            return
+        }
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, link)
+                },
+                "Share Jawahar Live Sync room"
+            )
+        )
     }
 
     private fun shareLatestLog() {
         val path = CaptureStateStore.state.value.logPath ?: run {
-            renderError("No capture log exists yet.")
+            renderError("No host log exists yet.")
             return
         }
         val file = File(path)
         if (!file.exists()) {
-            renderError("Capture log file no longer exists.")
+            renderError("The latest log file no longer exists.")
             return
         }
         val uri = FileProvider.getUriForFile(this, "${packageName}.files", file)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/csv"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        startActivity(Intent.createChooser(send, "Share capture log"))
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+                "Share host log"
+            )
+        )
     }
 
     private fun renderError(message: String) {
-        status.text = "ERROR"
+        captureStatus.text = "Capture: ERROR"
         detail.text = message
     }
 }

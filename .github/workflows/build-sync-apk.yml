@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -24,14 +24,19 @@ jobs:
         with:
           packages: ""
 
-      - name: Install Android SDK 35
+      - name: Install Android SDK 36
         shell: bash
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "8.13"
+
+      - name: Unit tests
+        shell: bash
+        run: |
+          gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build debug APK
         shell: bash
@@ -41,6 +46,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Jawahar-Live-Sync-Phase0
+          name: Jawahar-Live-Sync-Android-Host
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
