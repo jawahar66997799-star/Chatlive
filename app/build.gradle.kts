@@ -42,6 +42,16 @@ android {
             "DEFAULT_GUEST_BASE_URL",
             buildConfigString(providers.gradleProperty("JLS_GUEST_BASE_URL").orElse("").get())
         )
+        buildConfigField(
+            "int",
+            "OPUS_FRAME_MS",
+            providers.gradleProperty("JLS_FRAME_MS").orElse("20").get()
+        )
+        buildConfigField(
+            "int",
+            "OPUS_BITRATE_BPS",
+            providers.gradleProperty("JLS_OPUS_BITRATE").orElse("144000").get()
+        )
     }
 
     buildFeatures {
