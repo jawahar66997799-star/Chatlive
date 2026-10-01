@@ -23,34 +23,118 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: Extract exact libopus-wasm 0.4.1 distribution
+      - name: Extract exact libopus-wasm 0.4.1 browser runtime
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/jls-opus package
+          rm -rf /tmp/jls-opus
           mkdir -p /tmp/jls-opus
           cd /tmp/jls-opus
+
           tgz=$(npm pack --silent libopus-wasm@0.4.1)
           tar -xzf "$tgz"
 
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p=JSON.parse(fs.readFileSync('/tmp/jls-opus/package/package.json','utf8'));
+          if(p.name!=='libopus-wasm'||p.version!=='0.4.1') throw new Error('unexpected npm package identity');
+          if(p.license!=='MIT') throw new Error('unexpected package license');
+          NODE
+
+          registry_json=$(npm view libopus-wasm@0.4.1 dist.integrity dist.shasum dist.tarball --json)
+          printf '%s\n' "$registry_json" > /tmp/jls-opus/registry.json
+
           cd "$GITHUB_WORKSPACE"
           rm -rf relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
-          mkdir -p relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
-          cp -a /tmp/jls-opus/package/dist/. relay/web/vendor/libopus-wasm/
-          if [ -f /tmp/jls-opus/package/LICENSE ]; then
-            cp /tmp/jls-opus/package/LICENSE relay/web/vendor/libopus-wasm/LICENSE.txt
-          fi
+          mkdir -p relay/web/vendor/libopus-wasm/generated
+
+          # Exact browser runtime import graph for 0.4.1:
+          # index.js -> ./generated/libopus.generated.mjs
+          # The generated module contains the WebAssembly payload inline.
+          cp /tmp/jls-opus/package/dist/index.js relay/web/vendor/libopus-wasm/index.js
+          cp /tmp/jls-opus/package/dist/generated/libopus.generated.mjs relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+          cp /tmp/jls-opus/package/LICENSE relay/web/vendor/libopus-wasm/LICENSE.txt
+          cp /tmp/jls-opus/package/THIRD_PARTY_NOTICES.md relay/web/vendor/libopus-wasm/THIRD_PARTY_NOTICES.md
+
+          # Produce a byte-for-byte audit sidecar of the inline WASM without changing runtime behavior.
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {pathToFileURL} from 'node:url';
+
+          const generated=process.cwd()+'/relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs';
+          const out=process.cwd()+'/relay/web/vendor/libopus-wasm/generated/libopus.generated.wasm';
+          const original=WebAssembly.instantiate;
+          let captured=null;
+
+          WebAssembly.instantiate=async function(source,imports){
+            const bytes = source instanceof ArrayBuffer
+              ? new Uint8Array(source)
+              : ArrayBuffer.isView(source)
+                ? new Uint8Array(source.buffer,source.byteOffset,source.byteLength)
+                : null;
+            if(bytes && bytes.byteLength>=8 &&
+               bytes[0]===0x00 && bytes[1]===0x61 && bytes[2]===0x73 && bytes[3]===0x6d){
+              captured=Uint8Array.from(bytes);
+            }
+            return original.call(WebAssembly,source,imports);
+          };
+
+          try {
+            const mod=await import(pathToFileURL(generated).href+'?audit='+Date.now());
+            await mod.default({});
+          } finally {
+            WebAssembly.instantiate=original;
+          }
+
+          if(!captured || captured.byteLength<1024) throw new Error('failed to capture non-empty embedded WASM payload');
+          fs.writeFileSync(out,captured);
+          NODE
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg=JSON.parse(fs.readFileSync('/tmp/jls-opus/package/package.json','utf8'));
+          const dist=JSON.parse(fs.readFileSync('/tmp/jls-opus/registry.json','utf8'));
+          const metadata={
+            name:pkg.name,
+            version:pkg.version,
+            license:pkg.license,
+            repository:pkg.repository,
+            npmDistIntegrity:dist.integrity,
+            npmDistShasum:dist.shasum,
+            npmTarball:dist.tarball,
+            browserRuntimeFiles:[
+              'index.js',
+              'generated/libopus.generated.mjs'
+            ],
+            wasmPackaging:'inline in generated/libopus.generated.mjs',
+            wasmAuditSidecar:'generated/libopus.generated.wasm',
+            wasmAuditSidecarRuntimeRequired:false,
+            generatedFrom:'npm pack libopus-wasm@0.4.1'
+          };
+          fs.writeFileSync(
+            'relay/web/vendor/libopus-wasm/PACKAGE_METADATA.json',
+            JSON.stringify(metadata,null,2)+'\n'
+          );
+          NODE
 
           test -s relay/web/vendor/libopus-wasm/index.js
           test -s relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
+          test -s relay/web/vendor/libopus-wasm/generated/libopus.generated.wasm
+          test -s relay/web/vendor/libopus-wasm/LICENSE.txt
+          test -s relay/web/vendor/libopus-wasm/THIRD_PARTY_NOTICES.md
+          test -s relay/web/vendor/libopus-wasm/PACKAGE_METADATA.json
 
           (
             cd relay/web/vendor/libopus-wasm
             find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum
           ) > relay/web/vendor/libopus-wasm/MANIFEST.sha256
 
+          mkdir -p web/vendor/libopus-wasm
           cp -a relay/web/vendor/libopus-wasm/. web/vendor/libopus-wasm/
+
+          diff -qr relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
 
       - name: Commit vendored decoder
         shell: bash
@@ -60,8 +144,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A relay/web/vendor/libopus-wasm web/vendor/libopus-wasm
           if git diff --cached --quiet; then
-            echo "Vendored decoder already matches pinned npm package"
+            echo "Vendored decoder already matches exact pinned package"
             exit 0
           fi
-          git commit -m "guest: vendor full libopus-wasm 0.4.1 distribution"
+          git commit -m "guest: vendor exact libopus-wasm 0.4.1 runtime"
           git push origin HEAD:youtube-live-sync
