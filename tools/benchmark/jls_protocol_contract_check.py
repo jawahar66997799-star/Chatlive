@@ -33,12 +33,12 @@ def main() -> int:
     add(checks, "protocol_version",
         re.search(r"const val VERSION\s*=\s*1\b", android_proto) is not None and
         re.search(r"protocolVersion\s*=\s*1\b", relay_proto) is not None and
-        "dv.getUint8(4)===1" in guest_worker,
+        "version!==1" in guest_worker,
         "All endpoints use protocol v1.")
     add(checks, "audio_header_64",
         re.search(r"HEADER_BYTES\s*=\s*64\b", android_proto) is not None and
         re.search(r"audioHeaderLen\s*=\s*64\b", relay_proto) is not None and
-        "dv.byteLength>=64" in guest_worker,
+        "dv.byteLength<64" in guest_worker and "headerBytes!==64" in guest_worker,
         "All endpoints use a 64-byte audio header.")
     add(checks, "opus_codec_id",
         "CODEC_OPUS = 1" in android_proto and "codecOpus = 0x01" in relay_proto and "codecId!==1" in guest_worker,
