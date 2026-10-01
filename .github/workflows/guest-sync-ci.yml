@@ -1,0 +1,25 @@
+name: Guest Sync CI
+
+on:
+  push:
+    branches: [youtube-live-sync]
+    paths:
+      - 'relay/web/**'
+      - '.github/workflows/guest-sync-ci.yml'
+  pull_request:
+    paths:
+      - 'relay/web/**'
+      - '.github/workflows/guest-sync-ci.yml'
+
+jobs:
+  guest-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node relay/web/tests/sync-core.test.mjs
+      - run: node --check relay/web/decoder-worker.js
+      - run: node --check relay/web/worklet.js
+      - run: node --input-type=module --check < relay/web/player.js
