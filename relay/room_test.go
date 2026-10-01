@@ -23,8 +23,10 @@ func testConfig() Config {
 		DelayUpPerSec:       60 * time.Millisecond,
 		DelayDownPerSec:     10 * time.Millisecond,
 		JoinGuard:           150 * time.Millisecond,
-		IdleTTL:      2 * time.Minute,
-		MaxIPConns:   32,
+		IdleTTL:            2 * time.Minute,
+		MaxIPConns:         32,
+		HostStallAfter:     1500 * time.Millisecond,
+		LivenessInterval:   250 * time.Millisecond,
 	}
 }
 
@@ -246,5 +248,87 @@ func TestIdleCleanupResetsCommonDelayBaseline(t *testing.T) {
 	r.mu.Unlock()
 	if stats != 0 || lastAdjust != 0 {
 		t.Fatalf("idle cleanup retained adaptive history: stats=%d lastAdjust=%d", stats, lastAdjust)
+	}
+}
+
+
+func TestExplicitStreamStateTransitions(t *testing.T) {
+	r := newRoom(testConfig(), &Metrics{})
+
+	r.mu.Lock()
+	state, _ := r.stateLocked(100_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamConnectedNoHost {
+		t.Fatalf("initial stream state = %v, want %s", got, streamConnectedNoHost)
+	}
+
+	h := HostHello{
+		Type: "hello_host", V: protocolVersion, RoomID: r.id, HostSecret: r.hostSecret,
+		Epoch: 55, Codec: "opus", SampleRate: 48000, Channels: 2, Layer: 0, FrameSamples: 960,
+	}
+	gen, _, _, err := r.beginHost(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	state, _ = r.stateLocked(200_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamHostConnectedNoAudio {
+		t.Fatalf("host-without-audio state = %v, want %s", got, streamHostConnectedNoAudio)
+	}
+
+	f1 := &AudioFrame{
+		Raw: make([]byte, 65), Epoch: 55, Sequence: 1, SamplePosition: 0,
+		SampleRate: 48000, FrameSamples: 960, Channels: 2, Codec: codecOpus, Layer: 0,
+	}
+	if err := r.acceptFrame(f1, 1_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	state, _ = r.stateLocked(1_100_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamAudioFlowing {
+		t.Fatalf("flowing state = %v, want %s", got, streamAudioFlowing)
+	}
+
+	r.refreshLiveness(2_600_000_000)
+	r.mu.Lock()
+	state, _ = r.stateLocked(2_600_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamHostStalled {
+		t.Fatalf("stalled state = %v, want %s", got, streamHostStalled)
+	}
+	if age, _ := state["last_audio_age_ms"].(uint64); age < 1500 {
+		t.Fatalf("stalled audio age = %d ms, want >= 1500", age)
+	}
+
+	f2 := &AudioFrame{
+		Raw: make([]byte, 65), Epoch: 55, Sequence: 2, SamplePosition: 960,
+		SampleRate: 48000, FrameSamples: 960, Channels: 2, Codec: codecOpus, Layer: 0,
+	}
+	if err := r.acceptFrame(f2, 2_620_000_000); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	state, _ = r.stateLocked(2_630_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamAudioFlowing {
+		t.Fatalf("resumed state = %v, want %s", got, streamAudioFlowing)
+	}
+
+	r.updateHostState("CAPTURE_OK")
+	r.mu.Lock()
+	state, _ = r.stateLocked(2_640_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["host_capture_state"]; got != "CAPTURE_OK" {
+		t.Fatalf("host capture state = %v", got)
+	}
+
+	r.endHost(gen)
+	r.mu.Lock()
+	state, _ = r.stateLocked(2_650_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["stream_state"]; got != streamConnectedNoHost {
+		t.Fatalf("offline state = %v, want %s", got, streamConnectedNoHost)
 	}
 }
