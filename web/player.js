@@ -22,7 +22,11 @@ function setState(s,k='warn'){ui.state.textContent=s;ui.dot.className='dot '+k}
 function note(s){ui.note.textContent=s}
 
 function repairJoinState(){
-  if(joined||!audio||!node||audio.state!=='running')return false;
+  if(!audio||!node||audio.state!=='running')return false;
+  if(joined)return true;
+  // AudioContext.running is the browser's authoritative proof that playback
+  // permission has been granted. Never discard decoded PCM because a UI flag
+  // missed the transition.
   joined=true;
   metrics.selfHeals++;
   metrics.playoutGate='audio join auto-recovered';
@@ -254,9 +258,33 @@ function onDecoded(m){
   repairJoinState();
 
   if(!audio||!node){metrics.playoutGate='audio engine not ready';return;}
-  if(!joined){metrics.playoutGate='waiting for audio join';return;}
-  if(audio.state!=='running'){metrics.playoutGate='AudioContext '+audio.state;return;}
+  if(audio.state!=='running'){
+    joined=false;
+    metrics.playoutGate='AudioContext '+audio.state;
+    ui.join.disabled=false;
+    ui.join.textContent='TAP TO LISTEN';
+    return;
+  }
+  // Running Web Audio is authoritative. Repair a stale join/UI flag inline.
+  repairJoinState();
   const gateNow=performance.now();
+
+  // Continuity-first bootstrap: if clearly audible decoded PCM has existed for
+  // 350 ms but the precision scheduler has not accepted a single frame, route
+  // the current live PCM directly through the AudioWorklet. This prevents the
+  // decoded-but-silent SCHEDULER_BLOCKED deadlock seen on real Chrome devices.
+  if(metrics.scheduledFrames===0 && decodedAudibleSince!=null && gateNow-decodedAudibleSince>=350){
+    if(scheduleSafeLocal(m,'startup scheduler bootstrap')){
+      metrics.selfHeals++;
+      return;
+    }
+  }
+
+  if(fallbackPlayback){
+    scheduleSafeLocal(m,'continuity fallback');
+    return;
+  }
+
   if(!clock.ready){
     metrics.playoutGate='waiting for clock';
     if(shouldForceSafeLocal(gateNow))scheduleSafeLocal(m,'clock not ready');
