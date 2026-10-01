@@ -11,6 +11,7 @@ HOST = os.environ["TARGET_HOST"]
 ROOM = os.environ["ROOM"]
 HOST_SECRET = os.environ["HOST_SECRET"]
 GUEST_TOKEN = os.environ["GUEST_TOKEN"]
+METRICS_TOKEN = os.environ.get("METRICS_TOKEN", "")
 BASE = f"ws://{HOST}:8080"
 WIRE = ">4sBBBBQQQQQIHBBBBHI"
 
@@ -105,7 +106,10 @@ async def main():
         host.cancel()
     try:
         print("RELAY_METRICS_BEGIN", flush=True)
-        print(urllib.request.urlopen(f"http://{HOST}:8080/metrics", timeout=10).read().decode(), flush=True)
+        req = urllib.request.Request(f"http://{HOST}:8080/metrics")
+        if METRICS_TOKEN:
+            req.add_header("Authorization", "Bearer " + METRICS_TOKEN)
+        print(urllib.request.urlopen(req, timeout=10).read().decode(), flush=True)
         print("RELAY_METRICS_END", flush=True)
     except Exception as exc:
         print("METRICS_ERROR", repr(exc), flush=True)
