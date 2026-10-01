@@ -73,8 +73,10 @@ func loadConfig() (Config, error) {
 		CommonDelayMax:      time.Duration(envInt("JLS_COMMON_DELAY_MAX_MS", 1000)) * time.Millisecond,
 		DelayStatsTTL:       time.Duration(envInt("JLS_DELAY_STATS_TTL_MS", 10000)) * time.Millisecond,
 		DelayUpdateInterval: time.Duration(envInt("JLS_DELAY_UPDATE_MS", 1000)) * time.Millisecond,
-		DelayUpPerSec:       time.Duration(envInt("JLS_DELAY_UP_MS_PER_SEC", 60)) * time.Millisecond,
-		DelayDownPerSec:     time.Duration(envInt("JLS_DELAY_DOWN_MS_PER_SEC", 10)) * time.Millisecond,
+		// Keep room-delay movement inside the guest micro-resampler envelope.
+		// Defaults are 0.25 ms/s up and 0.15 ms/s down.
+		DelayUpPerSec:       time.Duration(envInt("JLS_DELAY_UP_US_PER_SEC", 250)) * time.Microsecond,
+		DelayDownPerSec:     time.Duration(envInt("JLS_DELAY_DOWN_US_PER_SEC", 150)) * time.Microsecond,
 		JoinGuard:           time.Duration(envInt("JLS_JOIN_GUARD_MS", 150)) * time.Millisecond,
 		IdleTTL:             time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
 		MaxIPConns:          envInt("JLS_MAX_IP_CONNECTIONS", 32),
