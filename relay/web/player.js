@@ -96,6 +96,37 @@ function diagnosePipeline(){
   return {code,message,action};
 }
 
+function applyDiagnosisState(diagnosis){
+  const labels={
+    OK:['Listening','ok'],
+    SAFE_LOCAL:['Listening · continuity mode','ok'],
+    RELAY_RECOVERING:['Listening · relay reconnecting','ok'],
+    RELAY_DISCONNECTED:['Relay disconnected · retrying','warn'],
+    HOST_OFFLINE:['Host offline','bad'],
+    DECODER_UNAVAILABLE:['Decoder unavailable','bad'],
+    DECODER_STARTING:['Starting decoder…','warn'],
+    NO_HOST_AUDIO:['No host audio','warn'],
+    AUDIO_ENGINE_NOT_READY:['Audio engine not ready','warn'],
+    AUDIO_GESTURE_REQUIRED:['Tap to resume audio','warn'],
+    JOIN_STATE_STUCK:['Repairing audio join','warn'],
+    CLOCK_CALIBRATING:['Calibrating synchronization…','warn'],
+    SCHEDULER_BLOCKED:['Recovering output scheduler','warn'],
+    OUTPUT_SILENT:['Output silent · recovering','bad'],
+    INVALID_LINK:['Invalid guest link','bad']
+  };
+  const [label,kind]=labels[diagnosis.code]||['Pipeline fault · '+diagnosis.code,'bad'];
+  setState(label,kind);
+  if(diagnosis.code==='OK'){
+    if(ui.note.dataset.pipelineFault==='1'){
+      ui.note.textContent='Live audio pipeline healthy.';
+      ui.note.dataset.pipelineFault='0';
+    }
+  }else{
+    ui.note.textContent=diagnosis.code+': '+diagnosis.message+' '+diagnosis.action;
+    ui.note.dataset.pipelineFault='1';
+  }
+}
+
 function wsURL(){
   const base=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;
   const u=new URL(base+'/v1/ws/guest/'+encodeURIComponent(room));
@@ -650,6 +681,7 @@ function fmt(v){return Number.isFinite(v)?v.toFixed(1):'—'}
 function render(){
   repairJoinState();
   const diagnosis=diagnosePipeline();
+  applyDiagnosisState(diagnosis);
   const c=clock.snapshot();
   const wsOk=!!ws&&ws.readyState===WebSocket.OPEN;
   const decodeOk=metrics.decoder!=='starting'&&metrics.decoder!=='opus-unavailable'&&metrics.decodedRmsDb>-70;
@@ -691,12 +723,5 @@ function render(){
   ].join('\n');
 }
 setInterval(sendStats,2000);
-setInterval(()=>{
-  render();
-  if(metrics.faultCode&&metrics.faultCode!=='LIVE'&&metrics.faultCode!=='SAFE_LOCAL'&&metrics.faultCode!=='DECODER_STARTING'){
-    if(!ui.note.textContent.includes(metrics.faultCode)){
-      ui.note.textContent=metrics.faultCode+': '+metrics.faultMessage+' '+metrics.faultAction;
-    }
-  }
-},500);
+setInterval(()=>{ render(); },500);
 render();connect();
