@@ -55,12 +55,6 @@ func clientIP(r *http.Request, trustProxyHeaders bool) string {
 		if ip := normalizeIP(r.Header.Get("X-Real-IP")); ip != "" {
 			return ip
 		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if ip := normalizeIP(parts[0]); ip != "" {
-				return ip
-			}
-		}
 	}
 	if ip := normalizeIP(r.RemoteAddr); ip != "" {
 		return ip
