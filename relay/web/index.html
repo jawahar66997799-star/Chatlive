@@ -3,135 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080b10">
 <title>Jawahar Live Sync</title>
 <style>
-:root{font-family:Inter,system-ui,-apple-system,sans-serif;color-scheme:dark;background:#090b10;color:#f7f8fa}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#1c2440 0,#090b10 45%)}
-.card{width:min(92vw,460px);padding:32px;border:1px solid #292f3d;border-radius:28px;background:rgba(16,19,28,.88);box-shadow:0 30px 80px rgba(0,0,0,.4)}
-.brand{font-weight:800;font-size:25px}.sub{color:#9ba4b7;margin:8px 0 28px}.room{font-size:14px;color:#9ba4b7}.room b{color:#fff}
-button{width:100%;border:0;border-radius:16px;padding:17px;font-size:17px;font-weight:800;background:#fff;color:#090b10;margin-top:22px}
-button:disabled{opacity:.55}.pill{display:inline-flex;align-items:center;gap:8px;margin-top:18px;padding:8px 11px;border-radius:999px;background:#151a26;font-size:13px}
-.dot{width:9px;height:9px;border-radius:50%;background:#e3a726}.dot.ok{background:#36d27c}.dot.bad{background:#ef5a68}
-.stats{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{background:#111621;padding:14px;border-radius:14px}.n{font-size:20px;font-weight:750}.l{font-size:12px;color:#8f98aa;margin-top:3px}
-small{display:block;color:#7f899c;margin-top:18px;line-height:1.45}
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark;background:#080b10;color:#f7f9fc}
+*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:22px;background:radial-gradient(900px 520px at 50% -10%,#1d2a50 0,#0d111a 52%,#080b10 100%)}
+.card{width:min(94vw,460px);padding:30px;border:1px solid rgba(255,255,255,.09);border-radius:28px;background:rgba(15,19,28,.88);backdrop-filter:blur(18px);box-shadow:0 28px 90px rgba(0,0,0,.42)}
+.brand{font-size:24px;font-weight:850;letter-spacing:-.02em}.sub{margin:7px 0 26px;color:#9ba7bb;font-size:14px}.room{color:#8590a5;font-size:12px;text-transform:uppercase;letter-spacing:.08em}.room b{color:#eef2f9;text-transform:none;letter-spacing:0}
+.status{display:flex;align-items:center;gap:9px;margin-top:18px;font-weight:700}.dot{width:9px;height:9px;border-radius:50%;background:#e3aa43;box-shadow:0 0 0 5px rgba(227,170,67,.08)}.dot.ok{background:#39d98a;box-shadow:0 0 0 5px rgba(57,217,138,.08)}.dot.bad{background:#ff6470;box-shadow:0 0 0 5px rgba(255,100,112,.08)}
+button{width:100%;margin-top:24px;border:0;border-radius:16px;padding:16px 18px;font-size:16px;font-weight:850;letter-spacing:.02em;background:#f8fafc;color:#080b10;cursor:pointer}button:disabled{opacity:.58;cursor:default}
+.note{margin-top:16px;color:#8d99ad;font-size:13px;line-height:1.5;min-height:39px}
+details{margin-top:18px;border-top:1px solid rgba(255,255,255,.07);padding-top:14px;color:#8590a5}summary{cursor:pointer;font-size:12px;font-weight:750;user-select:none}pre{white-space:pre-wrap;word-break:break-word;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#a8b2c4;margin:12px 0 0}
+.footer{margin-top:17px;font-size:11px;color:#647086;text-align:center}
 </style>
 </head>
 <body>
-<div class="card">
+<main class="card">
   <div class="brand">Jawahar Live Sync</div>
-  <div class="sub">Open link → tap once → listen together.</div>
+  <div class="sub">One link. One tap only when the browser requires it.</div>
   <div class="room">Room <b id="room">—</b></div>
-  <div class="pill"><span id="dot" class="dot"></span><span id="state">Connecting…</span></div>
-  <button id="join" disabled>JOIN & LISTEN</button>
-  <div class="stats">
-    <div class="stat"><div id="rtt" class="n">—</div><div class="l">Clock RTT</div></div>
-    <div class="stat"><div id="buffer" class="n">400 ms</div><div class="l">Sync buffer</div></div>
-  </div>
-  <small id="note">You do not need YouTube or the song on this device.</small>
-</div>
-<script>
-const room = location.pathname.startsWith('/r/') ? decodeURIComponent(location.pathname.slice(3)) : (new URLSearchParams(location.search).get('room') || '753951');
-document.querySelector('#room').textContent = room;
-
-const stateEl=document.querySelector('#state'), dot=document.querySelector('#dot'), join=document.querySelector('#join');
-const rttEl=document.querySelector('#rtt'), bufferEl=document.querySelector('#buffer'), note=document.querySelector('#note');
-
-let ws, audio, node, joined=false, targetDelayMs=400, sampleRate=48000, channels=2;
-let bestClock=null, pingId=0, pingPending=new Map(), reconnectTimer=null;
-
-function setState(s, cls=''){ stateEl.textContent=s; dot.className='dot '+cls; }
-function wsURL(){ return (location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/listen?room='+encodeURIComponent(room); }
-
-function connect(){
-  clearTimeout(reconnectTimer);
-  setState('Connecting…');
-  ws=new WebSocket(wsURL());
-  ws.binaryType='arraybuffer';
-  ws.onopen=()=>{
-    setState('Connected','ok');
-    join.disabled=false;
-    for(let i=0;i<12;i++) setTimeout(sendPing,i*120);
-    if(joined) ws.send(JSON.stringify({type:'ready'}));
-  };
-  ws.onclose=()=>{
-    setState('Reconnecting…','bad');
-    reconnectTimer=setTimeout(connect,500);
-  };
-  ws.onerror=()=>{};
-  ws.onmessage=onMessage;
-}
-
-function sendPing(){
-  if(!ws || ws.readyState!==1) return;
-  const id=++pingId, t0=performance.now();
-  pingPending.set(id,t0);
-  ws.send(JSON.stringify({type:'ping',id,clientMs:t0}));
-}
-
-function onMessage(e){
-  if(typeof e.data==='string'){
-    let m; try{m=JSON.parse(e.data)}catch{return}
-    if(m.type==='hello'){
-      targetDelayMs=m.targetDelayMs||400; sampleRate=m.sampleRate||48000; channels=m.channels||2;
-      bufferEl.textContent=targetDelayMs+' ms';
-      setState(m.hostOnline?'Host online':'Waiting for host',m.hostOnline?'ok':'');
-    } else if(m.type==='format'){
-      sampleRate=m.sampleRate||sampleRate; channels=m.channels||channels;
-    } else if(m.type==='pong'){
-      const t0=pingPending.get(m.id); if(t0==null)return;
-      pingPending.delete(m.id);
-      const t3=performance.now(), rtt=t3-t0, serverMs=Number(m.serverNs)/1e6;
-      // server = local midpoint + offset
-      const offset=serverMs-((t0+t3)/2);
-      if(!bestClock || rtt<bestClock.rtt) bestClock={rtt,offset};
-      rttEl.textContent=(bestClock.rtt||rtt).toFixed(1)+' ms';
-    } else if(m.type==='host-offline'){
-      setState('Host temporarily offline','bad');
-      node?.port.postMessage({type:'reset'});
-    }
-    return;
-  }
-  if(!joined || !audio || !node || !bestClock) return;
-  const dv=new DataView(e.data);
-  if(dv.byteLength<24 || String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3))!=='JLS1') return;
-  const serverNs=Number(dv.getBigUint64(12,false));
-  const frames=dv.getUint32(20,false);
-  const payload=new Int16Array(e.data,24,Math.min(frames*channels,(dv.byteLength-24)/2));
-  const left=new Float32Array(frames), right=new Float32Array(frames);
-  if(channels===1){
-    for(let i=0;i<frames;i++){const v=payload[i]/32768; left[i]=v; right[i]=v}
-  } else {
-    for(let i=0;i<frames;i++){left[i]=payload[i*2]/32768; right[i]=payload[i*2+1]/32768}
-  }
-  const targetServerMs=serverNs/1e6+targetDelayMs;
-  const targetLocalPerfMs=targetServerMs-bestClock.offset;
-  const delayMs=targetLocalPerfMs-performance.now();
-  const targetAudioTime=audio.currentTime+Math.max(0,delayMs)/1000;
-  const targetFrame=Math.round(targetAudioTime*audio.sampleRate);
-  node.port.postMessage({type:'pcm',targetFrame,left,right},[left.buffer,right.buffer]);
-}
-
-join.onclick=async()=>{
-  try{
-    if(!audio){
-      audio=new AudioContext({sampleRate:48000,latencyHint:'interactive'});
-      await audio.audioWorklet.addModule('/worklet.js');
-      node=new AudioWorkletNode(audio,'jawahar-sync-processor',{numberOfOutputs:1,outputChannelCount:[2]});
-      node.connect(audio.destination);
-      node.port.onmessage=(e)=>{if(e.data?.type==='late')note.textContent='Network is late; auto-correcting. Late frames: '+e.data.count};
-    }
-    await audio.resume();
-    joined=true;
-    if(ws?.readyState===1) ws.send(JSON.stringify({type:'ready'}));
-    join.textContent='LISTENING';
-    join.disabled=true;
-    setState('Listening in sync','ok');
-  }catch(err){
-    note.textContent='Audio start failed: '+err;
-    join.disabled=false;
-  }
-};
-
-connect();
-</script>
-</body></html>
+  <div class="status"><span id="dot" class="dot"></span><span id="state">Connecting…</span></div>
+  <button id="join" disabled>TAP TO LISTEN</button>
+  <div id="note" class="note">Connecting to the live room and calibrating its clock before you tap.</div>
+  <details id="diag"><summary>Diagnostics</summary><pre id="diagText">Starting…</pre></details>
+  <div class="footer">Live stream · synchronized playout · no song download</div>
+</main>
+<script type="module" src="/player.js"></script>
+</body>
+</html>
