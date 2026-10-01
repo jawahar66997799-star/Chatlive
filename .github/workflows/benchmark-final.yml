@@ -1,0 +1,88 @@
+name: JLS Benchmark Final
+
+on:
+  push:
+    branches:
+      - workstream-4-benchmarking-final
+  workflow_dispatch:
+
+jobs:
+  tools-and-simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            tools/benchmark/jls_network_clock_sim.py \
+            tools/benchmark/jls_calibration.py \
+            tools/benchmark/jls_calibration_selftest.py \
+            tools/benchmark/jls_generate_e2e_signal.py \
+            tools/benchmark/jls_log_analyzer.py \
+            tools/benchmark/jls_protocol_contract_check.py
+
+      - name: Five-minute 20-listener steady-state matrix
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py \
+            --listeners 20 --duration-s 300 --scenario all --mode both --outages off \
+            --json-out /tmp/jls-sim-steady.json --md-out /tmp/jls-sim-steady.md
+          cat /tmp/jls-sim-steady.md
+
+      - name: Five-minute 20-listener failure-injected matrix
+        run: |
+          python3 tools/benchmark/jls_network_clock_sim.py \
+            --listeners 20 --duration-s 300 --scenario all --mode both --outages on \
+            --json-out /tmp/jls-sim-failures.json --md-out /tmp/jls-sim-failures.md
+          cat /tmp/jls-sim-failures.md
+
+      - name: Acoustic calibration synthetic self-test
+        run: python3 tools/benchmark/jls_calibration_selftest.py
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Generate E2E reference assets
+        run: |
+          python3 tools/benchmark/jls_generate_e2e_signal.py \
+            --duration-s 12 --out /tmp/jls-e2e.wav --manifest /tmp/jls-e2e.json
+          DURATION=12 bash tools/benchmark/jls_make_e2e_video.sh /tmp/jls-e2e.wav /tmp/jls-e2e.mp4
+          test -s /tmp/jls-e2e.wav
+          test -s /tmp/jls-e2e.json
+          test -s /tmp/jls-e2e.mp4
+
+      - name: Shell syntax
+        run: |
+          bash -n tools/benchmark/jls_failure_harness.sh
+          bash -n tools/benchmark/jls_make_e2e_video.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jls-benchmark-final-simulated
+          path: |
+            /tmp/jls-sim-steady.json
+            /tmp/jls-sim-steady.md
+            /tmp/jls-sim-failures.json
+            /tmp/jls-sim-failures.md
+            /tmp/jls-e2e.json
+            /tmp/jls-e2e.wav
+            /tmp/jls-e2e.mp4
+
+  integration-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Android relay guest contract gate
+        run: python3 tools/benchmark/jls_protocol_contract_check.py --root . --json-out /tmp/jls-contract.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+
+      - name: Relay compile gate
+        working-directory: relay
+        run: |
+          go mod tidy
+          go test ./...
