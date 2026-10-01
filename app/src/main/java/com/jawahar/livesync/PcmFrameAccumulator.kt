@@ -79,5 +79,13 @@ class PcmFrameAccumulator(
         fillFrames = 0
     }
 
+    fun advanceGapNanos(gapNs: Long) {
+        if (gapNs <= 0L) return
+        val skippedSamples = gapNs * sampleRate / 1_000_000_000L
+        if (skippedSamples > 0L) {
+            nextSamplePosition += skippedSamples
+        }
+    }
+
     fun samplePosition(): Long = nextSamplePosition
 }
