@@ -53,6 +53,11 @@ export class ClockModel {
     this.model = null;
   }
 
+  reset() {
+    this.samples = [];
+    this.model = null;
+  }
+
   addExchange(x) {
     const s = makeNtpSample(x);
     this.samples.push(s);
