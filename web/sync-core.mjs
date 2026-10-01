@@ -304,8 +304,50 @@ export const GUEST_PIPELINE_STATES = Object.freeze({
   INVALID_LINK:'INVALID_LINK',
 });
 
+export const GUEST_CONTINUITY_STATES = Object.freeze({
+  CONNECTED_NO_HOST:'CONNECTED_NO_HOST',
+  HOST_CONNECTED_NO_AUDIO:'HOST_CONNECTED_NO_AUDIO',
+  AUDIO_FLOWING:'AUDIO_FLOWING',
+  HOST_STALLED:'HOST_STALLED',
+  GUEST_TOO_SLOW:'GUEST_TOO_SLOW',
+  RECONNECTING:'RECONNECTING',
+  LIVE:'LIVE',
+});
+
 const finiteAge=(now,at)=>Number.isFinite(at)&&at>0?Math.max(0,now-at):Infinity;
 const stateResult=(code,label,reason,action,tone='warn')=>({code,label,reason,action,tone});
+
+export function deriveGuestContinuityState(e={},nowMs=0){
+  const S=GUEST_CONTINUITY_STATES;
+  const now=Number.isFinite(nowMs)?nowMs:0;
+  const outputAge=finiteAge(now,e.lastAudibleOutputAt);
+  const directAge=finiteAge(now,e.lastDirectAudibleAt);
+  const outputAudible=!!e.outputAudible||outputAge<=1100||directAge<=1100;
+
+  if(Number.isFinite(e.guestTooSlowUntil)&&e.guestTooSlowUntil>now)
+    return stateResult(S.GUEST_TOO_SLOW,S.GUEST_TOO_SLOW,'This listener fell behind the relay live edge.','Stale queued media was discarded; reconnecting to the live edge automatically.','bad');
+
+  if(!e.relayOpen)
+    return stateResult(S.RECONNECTING,e.networkOnline===false?'RECONNECTING · NETWORK OFFLINE':S.RECONNECTING,
+      e.networkOnline===false?'The device network is unavailable.':'The relay WebSocket is reconnecting.',
+      'Buffered output may continue briefly; resume uses epoch/sequence without stale backlog.','warn');
+
+  const stream=String(e.relayStreamState||'');
+  if(stream===S.CONNECTED_NO_HOST||e.hostOnline!==true)
+    return stateResult(S.CONNECTED_NO_HOST,S.CONNECTED_NO_HOST,'Relay connected; no active host socket.','Start or reconnect the host.','warn');
+  if(stream===S.HOST_CONNECTED_NO_AUDIO)
+    return stateResult(S.HOST_CONNECTED_NO_AUDIO,S.HOST_CONNECTED_NO_AUDIO,'Host socket is connected, but no live audio frame has arrived.','Check host capture/media state.','warn');
+  if(stream===S.HOST_STALLED)
+    return stateResult(S.HOST_STALLED,S.HOST_STALLED,'Host socket is alive, but live audio frames have stopped.','The relay will resume at the live edge when audio returns.','bad');
+  if(stream===S.AUDIO_FLOWING){
+    if(outputAudible)
+      return stateResult(S.LIVE,S.LIVE,'Relay audio is flowing and non-silent output is rendering.','No action needed.','ok');
+    return stateResult(S.AUDIO_FLOWING,S.AUDIO_FLOWING,'Relay is receiving live host audio; this guest is preparing or recovering output.','See the detailed pipeline diagnosis below.','warn');
+  }
+
+  return stateResult(e.hostOnline?S.AUDIO_FLOWING:S.CONNECTED_NO_HOST,e.hostOnline?S.AUDIO_FLOWING:S.CONNECTED_NO_HOST,
+    e.hostOnline?'Host is online; awaiting authoritative stream state.':'Relay connected; awaiting host.','Waiting for authoritative relay state.','warn');
+}
 
 /**
  * Evidence-driven guest UX state. This intentionally separates "scheduled"
@@ -352,6 +394,11 @@ export function deriveGuestPipelineState(e={},nowMs=0){
 
   if(e.decoderFailed)
     return stateResult(S.DECODER_FAILED,S.DECODER_FAILED,e.decoderError||'The Opus decoder failed to initialize or decode.','Reload once; if it persists, inspect decoder diagnostics.','bad');
+
+  if(e.relayStreamState==='HOST_STALLED'){
+    const capture=e.hostCaptureState?(' Host reports '+e.hostCaptureState+'.'):'';
+    return stateResult(S.HOST_STALLED,S.HOST_STALLED,'The relay says the host socket is alive but live audio frames have stalled.'+capture,'The guest will stay at the live edge and resume automatically when frames return.','bad');
+  }
 
   if(binaryFrames>0 && binaryAge>3500 && relayFresh)
     return stateResult(S.HOST_STALLED,S.HOST_STALLED,'The host is still marked online, but live audio packets stopped arriving.','The guest will stay at the live edge while the host/relay path recovers.','bad');
