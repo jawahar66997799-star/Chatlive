@@ -228,7 +228,7 @@ func main() {
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    16 * 1024,
 	}
-	log.Printf("JLS relay v1 listening port=%s room=%s maxGuests=%d ring=%s", cfg.Port, cfg.RoomID, cfg.MaxGuests, cfg.RingDuration)
+	log.Printf("JLS relay v1 listening port=%s maxGuests=%d ring=%s", cfg.Port, cfg.MaxGuests, cfg.RingDuration)
 	log.Fatal(srv.ListenAndServe())
 }
 
