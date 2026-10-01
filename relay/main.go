@@ -54,6 +54,8 @@ type Config struct {
 	JoinGuard           time.Duration
 	IdleTTL             time.Duration
 	MaxIPConns          int
+	HostStallAfter      time.Duration
+	LivenessInterval    time.Duration
 	MetricsToken        string
 	TrustProxyHeaders   bool
 }
@@ -81,6 +83,8 @@ func loadConfig() (Config, error) {
 		JoinGuard:           time.Duration(envInt("JLS_JOIN_GUARD_MS", 150)) * time.Millisecond,
 		IdleTTL:             time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
 		MaxIPConns:          envInt("JLS_MAX_IP_CONNECTIONS", 32),
+		HostStallAfter:     time.Duration(envInt("JLS_HOST_STALL_MS", 1500)) * time.Millisecond,
+		LivenessInterval:   time.Duration(envInt("JLS_LIVENESS_CHECK_MS", 250)) * time.Millisecond,
 		MetricsToken:        os.Getenv("JLS_METRICS_TOKEN"),
 		TrustProxyHeaders:   envBool("JLS_TRUST_PROXY_HEADERS", false),
 	}
@@ -96,6 +100,9 @@ func loadConfig() (Config, error) {
 	}
 	if cfg.DelayStatsTTL <= 0 || cfg.DelayUpdateInterval <= 0 || cfg.DelayUpPerSec <= 0 || cfg.DelayDownPerSec <= 0 {
 		return Config{}, fmt.Errorf("invalid adaptive-delay controller settings")
+	}
+	if cfg.HostStallAfter < 500*time.Millisecond || cfg.LivenessInterval < 100*time.Millisecond || cfg.LivenessInterval > cfg.HostStallAfter {
+		return Config{}, fmt.Errorf("invalid liveness timing settings")
 	}
 	if cfg.MetricsToken != "" && len(cfg.MetricsToken) < 32 {
 		return Config{}, fmt.Errorf("JLS_METRICS_TOKEN must be empty or at least 32 characters")
@@ -150,6 +157,9 @@ type Metrics struct {
 	clockRequests     atomic.Uint64
 	epochChanges      atomic.Uint64
 	authFailures      atomic.Uint64
+	hostStalls        atomic.Uint64
+	slowGuestDisconnects atomic.Uint64
+	staleFanoutDrops  atomic.Uint64
 }
 
 type ipLimiter struct {
@@ -210,6 +220,14 @@ func main() {
 	mux.HandleFunc("/decoder-worker.js", serveWeb)
 	mux.HandleFunc("/sync-core.mjs", serveWeb)
 	mux.HandleFunc("/", serveWeb)
+
+	go func() {
+		t := time.NewTicker(cfg.LivenessInterval)
+		defer t.Stop()
+		for range t.C {
+			s.room.refreshLiveness(serverNS())
+		}
+	}()
 
 	go func() {
 		t := time.NewTicker(30 * time.Second)
@@ -319,6 +337,9 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "jls_clock_requests_total %d\n", s.metrics.clockRequests.Load())
 	fmt.Fprintf(w, "jls_epoch_changes_total %d\n", s.metrics.epochChanges.Load())
 	fmt.Fprintf(w, "jls_auth_failures_total %d\n", s.metrics.authFailures.Load())
+	fmt.Fprintf(w, "jls_host_stalls_total %d\n", s.metrics.hostStalls.Load())
+	fmt.Fprintf(w, "jls_slow_guest_disconnects_total %d\n", s.metrics.slowGuestDisconnects.Load())
+	fmt.Fprintf(w, "jls_stale_fanout_drops_total %d\n", s.metrics.staleFanoutDrops.Load())
 	fmt.Fprintf(w, "jls_common_delay_ms %.3f\n", s.room.commonDelayMilliseconds())
 }
 
