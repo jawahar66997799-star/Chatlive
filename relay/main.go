@@ -55,6 +55,7 @@ type Config struct {
 	IdleTTL             time.Duration
 	MaxIPConns          int
 	MetricsToken        string
+	TrustProxyHeaders   bool
 }
 
 func loadConfig() (Config, error) {
@@ -81,6 +82,7 @@ func loadConfig() (Config, error) {
 		IdleTTL:             time.Duration(envInt("JLS_IDLE_TTL_SEC", 120)) * time.Second,
 		MaxIPConns:          envInt("JLS_MAX_IP_CONNECTIONS", 32),
 		MetricsToken:        os.Getenv("JLS_METRICS_TOKEN"),
+		TrustProxyHeaders:   envBool("JLS_TRUST_PROXY_HEADERS", false),
 	}
 	if len(cfg.RoomID) < 32 || len(cfg.HostSecret) < 32 || len(cfg.GuestToken) < 22 {
 		return Config{}, fmt.Errorf("JLS_ROOM_ID, JLS_HOST_SECRET, and JLS_GUEST_TOKEN must be configured with >=128-bit unguessable values")
