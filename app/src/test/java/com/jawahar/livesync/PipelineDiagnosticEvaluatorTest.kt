@@ -49,6 +49,8 @@ class PipelineDiagnosticEvaluatorTest {
             healthy().copy(captureHealth = CaptureHealth.SOURCE_PAUSED)
         )
         assertNull(result.brokenStage)
+        assertEquals(PipelineStageState.WAITING, result.capture)
+        assertEquals(PipelineStageState.SILENT, result.pcm)
         assertTrue(result.detail.contains("not package-identifiable"))
         assertTrue(result.detail.contains("remains unknown"))
         assertFalse(result.detail.contains("YouTube playback is not active"))
