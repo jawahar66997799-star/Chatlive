@@ -11,4 +11,5 @@ function near(a,b,e,msg=''){assert.ok(Math.abs(a-b)<=e,msg+' got='+a+' want='+b+
 {assert.equal(classifyPhaseError(.5),'deadband');assert.equal(classifyPhaseError(20),'micro-correct');assert.equal(classifyPhaseError(120),'hard-resync');assert.equal(bufferErrorMs(430,400),30)}
 {const m=new OutputTimeMapper();for(let i=0;i<10;i++)m.add({performanceTimeMs:1000+i*100,contextTimeSec:(200+i*100)/1000});near(m.contextTimeForPerformance(2500),1.7,.001,'output map');near(fallbackContextTimeForPerformance(2,1000,1500,.05),2.45,.001,'fallback')}
 {const b=new ReconnectBackoff();assert.deepEqual([b.next(),b.next(),b.next()],[250,425,723]);b.reset();assert.equal(b.next(),250)}
+{const c=new ClockModel();c.addExchange({t0Ms:0,t3Ms:20,serverRecvNs:1010e6,serverSendNs:1010e6});assert.equal(c.ready,true);c.reset();assert.equal(c.ready,false);assert.equal(c.snapshot(),null)}
 console.log('JLS sync deterministic tests: PASS');
