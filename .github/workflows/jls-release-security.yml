@@ -57,6 +57,10 @@ jobs:
           test -s relay/web/vendor/libopus-wasm/generated/libopus.generated.mjs
           test -s relay/web/vendor/libopus-wasm/MANIFEST.sha256
 
+          cmp relay/main.go main.go
+          cmp relay/server.go server.go
+          cmp relay/protocol.go protocol.go
+          cmp relay/room.go room.go
           cmp relay/web/player.js web/player.js
           cmp relay/web/decoder-worker.js web/decoder-worker.js
           cmp relay/web/sync-core.mjs web/sync-core.mjs
