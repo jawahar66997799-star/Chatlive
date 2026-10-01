@@ -85,3 +85,12 @@ assert.match(player,/clock not ready/);
 assert.match(player,/no precision frames scheduled/);
 assert.match(player,/Playout gate:/);
 assert.doesNotMatch(player,/silentOutputForMs>1200\s*&&\s*metrics\.scheduledFrames>=20/);
+
+assert.match(player,/function repairJoinState/);
+assert.match(player,/function diagnosePipeline/);
+assert.match(player,/JOIN_STATE_STUCK/);
+assert.match(player,/SCHEDULER_BLOCKED/);
+assert.match(player,/OUTPUT_SILENT/);
+assert.match(player,/Pipeline: relay/);
+assert.match(player,/Self-heals:/);
+assert.match(player,/repairJoinState\(\);[\s\S]*if\(!audio\|\|!node\)/);
