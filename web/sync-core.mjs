@@ -261,3 +261,16 @@ export class OutputTimeMapper {
 export function fallbackContextTimeForPerformance(audioCurrentTimeSec, nowPerfMs, targetPerfMs, latencySec=0) {
   return audioCurrentTimeSec + (targetPerfMs-nowPerfMs)/1000 - Math.max(0, latencySec||0);
 }
+
+export class ServerInstanceTracker {
+  constructor(){ this.id=null; this.changes=0; }
+  reset(){ this.id=null; this.changes=0; }
+  observe(next){
+    const id=typeof next==='string'?next.trim():'';
+    if(!id)return {changed:false,initial:false,id:this.id};
+    if(this.id===null){this.id=id;return {changed:false,initial:true,id};}
+    if(this.id===id)return {changed:false,initial:false,id};
+    const previous=this.id;this.id=id;this.changes++;
+    return {changed:true,initial:false,id,previous,changes:this.changes};
+  }
+}
