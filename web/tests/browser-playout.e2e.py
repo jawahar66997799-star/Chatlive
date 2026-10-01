@@ -107,7 +107,16 @@ async def main():
 
             await page.goto(f"http://127.0.0.1:{PORT}/r/{GUEST_TOKEN}", wait_until="domcontentloaded")
             await page.wait_for_selector("#join", state="visible")
-            await page.click("#join")
+            join = page.locator("#join")
+            if await join.is_enabled():
+                await join.click()
+            else:
+                # Some Chromium/headless environments allow Web Audio to start
+                # immediately. In that legal case the UI already shows LISTENING.
+                await page.wait_for_function(
+                    "() => window.__JLS_METRICS__ && window.__JLS_METRICS__.audioState === 'running'",
+                    timeout=5000,
+                )
 
             async def send_audio():
                 for i in range(1, 401):
