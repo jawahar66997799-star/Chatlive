@@ -73,7 +73,9 @@ def smoke_http_assets():
 
 async def main():
     instance, csp, asset_sizes, metrics_protected = smoke_http_assets()
-    epoch = (time.monotonic_ns() & ((1 << 63) - 1)) or 1
+    # Deliberately above JavaScript's Number.MAX_SAFE_INTEGER so the public
+    # control plane must preserve it as an exact decimal string.
+    epoch = 0x7F123456789ABCDE
     async with websockets.connect(wsbase + "/v1/ws/host", open_timeout=15, ping_interval=None) as host:
         await host.send(json.dumps({
             "type":"hello_host","v":1,"room_id":room,"host_secret":host_secret,
@@ -88,6 +90,8 @@ async def main():
             state = json.loads(await asyncio.wait_for(guest.recv(), 10))
             if state.get("server_instance_id") != instance:
                 raise RuntimeError("guest state server_instance_id mismatch")
+            if state.get("epoch") != str(epoch):
+                raise RuntimeError(f"guest state epoch is not exact JSON-safe string: {state.get('epoch')!r}")
 
             t0 = time.monotonic_ns()
             await guest.send(json.dumps({"type":"clock_req","v":1,"id":"smoke","t0_guest_ns":t0}))
