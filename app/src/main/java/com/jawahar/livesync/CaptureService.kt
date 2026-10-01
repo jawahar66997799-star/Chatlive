@@ -402,7 +402,7 @@ class CaptureService : Service() {
                 val detail = when (sourceHealth) {
                     CaptureHealth.CAPTURE_OK -> "Digital playback PCM verified."
                     CaptureHealth.SOURCE_SILENT -> "Captured PCM is momentarily silent."
-                    CaptureHealth.SOURCE_PAUSED -> "Captured PCM is silent and Android reports no active system media playback; target pause is likely but not package-identifiable through this public callback."
+                    CaptureHealth.SOURCE_PAUSED -> "Captured PCM is silent and Android reports no active system media playback. Public Android APIs do not identify the playback package here, so YouTube/YT Music pause vs capture-policy/content silence remains unknown."
                     CaptureHealth.CAPTURE_BLOCKED_SUSPECTED -> "System media playback appears active, but permitted YouTube/YT Music capture PCM remains digital silence; source capture policy or source-side silence is suspected."
                     else -> sourceHealth.name
                 }
