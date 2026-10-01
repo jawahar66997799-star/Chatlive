@@ -1,5 +1,6 @@
 package com.jawahar.livesync
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -191,7 +192,7 @@ class CaptureService : Service() {
             intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
         }
 
-        if (resultCode < 0 || resultData == null) {
+        if (resultCode != Activity.RESULT_OK || resultData == null) {
             fail("Missing or invalid MediaProjection consent result.")
             return
         }
@@ -434,9 +435,7 @@ class CaptureService : Service() {
                     }
 
                     var flags = 0
-                    if (pendingDiscontinuity.getAndSet(false) ||
-                        effectiveHealth() == CaptureHealth.RECOVERING
-                    ) {
+                    if (pendingDiscontinuity.getAndSet(false)) {
                         flags = flags or JlsProtocol.FLAG_DISCONTINUITY
                     }
 
@@ -480,6 +479,7 @@ class CaptureService : Service() {
     }
 
     private fun recoverRecorder(accumulator: PcmFrameAccumulator): Boolean {
+        val gapStartNs = lastGoodReadNs.get()
         sourceHealth = CaptureHealth.RECOVERING
         publishSnapshot("Recovering AudioRecord.")
         encoderQueue.clear()
@@ -507,8 +507,12 @@ class CaptureService : Service() {
             }
             try {
                 if (createAndStartRecorder()) {
+                    val recoveryNowNs = SystemClock.elapsedRealtimeNanos()
+                    accumulator.advanceGapNanos(
+                        (recoveryNowNs - gapStartNs).coerceAtLeast(0L)
+                    )
                     recoveryRequested.set(false)
-                    recoveryUntilNs = SystemClock.elapsedRealtimeNanos() + 1_000_000_000L
+                    recoveryUntilNs = recoveryNowNs + 1_000_000_000L
                     sourceHealth = CaptureHealth.RECOVERING
                     publishSnapshot("AudioRecord recovered.")
                     return true
