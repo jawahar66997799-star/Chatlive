@@ -44,41 +44,76 @@ object SecretStore {
     }
 
     /**
-     * Writes the complete supplied secret set in one SharedPreferences commit.
-     * Encryption and verification are completed around one commit, so a crypto
-     * failure cannot partially replace persisted credentials.
+     * Writes the complete supplied secret set as one transaction:
+     * prepare + decrypt-verify -> commit -> persisted decrypt-verify.
+     * If the persisted verification fails after commit, the previous ciphertext
+     * set is restored before this call reports failure.
      */
     fun putAll(context: Context, values: Map<String, String>): Boolean = synchronized(lock) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val previous = values.keys.associateWith { name -> prefs.getString(name, null) }
+        var committed = false
+
         try {
             val prepared = values.mapValues { (name, value) ->
                 if (value.isBlank()) null else encrypt(name, value)
             }
 
-            // Verify every ciphertext before replacing persisted state.
             val verifiedBeforeCommit = values.all { (name, expected) ->
                 val encoded = prepared[name]
-                if (expected.isBlank()) encoded == null
-                else encoded != null && decrypt(name, encoded) == expected
+                if (expected.isBlank()) {
+                    encoded == null
+                } else {
+                    encoded != null && decrypt(name, encoded) == expected
+                }
             }
             if (!verifiedBeforeCommit) return@synchronized false
 
-            val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            val editor = prefs.edit()
             prepared.forEach { (name, encoded) ->
                 if (encoded == null) editor.remove(name) else editor.putString(name, encoded)
             }
             if (!editor.commit()) return@synchronized false
+            committed = true
+
+            val persistedVerified = values.all { (name, expected) ->
+                val encoded = prefs.getString(name, null)
+                if (expected.isBlank()) {
+                    encoded == null
+                } else {
+                    encoded != null && runCatching { decrypt(name, encoded) }.getOrNull() == expected
+                }
+            }
+
+            if (!persistedVerified) {
+                restoreCiphertexts(prefs, previous)
+                values.keys.forEach { processCache.remove(it) }
+                return@synchronized false
+            }
 
             values.forEach { (name, value) ->
                 processCache[name] = value.takeIf { it.isNotBlank() }
             }
             true
         } catch (_: Throwable) {
+            if (committed) {
+                restoreCiphertexts(prefs, previous)
+                values.keys.forEach { processCache.remove(it) }
+            }
             false
         }
     }
 
-    fun contains(context: Context, name: String): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(name)
+    private fun restoreCiphertexts(
+        prefs: android.content.SharedPreferences,
+        previous: Map<String, String?>
+    ) {
+        val editor = prefs.edit()
+        previous.forEach { (name, encoded) ->
+            if (encoded == null) editor.remove(name) else editor.putString(name, encoded)
+        }
+        editor.commit()
+    }
 
     private fun encrypt(name: String, value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
