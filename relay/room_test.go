@@ -347,3 +347,28 @@ func TestPublicRoomCodeValidation(t *testing.T) {
 		}
 	}
 }
+
+
+func TestHostSelectedPublicRoomCodeOverridesStaticAlias(t *testing.T) {
+	r := newRoom(testConfig(), &Metrics{})
+	h := HostHello{
+		Type: "hello_host", V: protocolVersion, RoomID: r.id, HostSecret: r.hostSecret,
+		PublicRoomCode: "123456",
+		Epoch: 77, Codec: "opus", SampleRate: 48000, Channels: 2, Layer: 0, FrameSamples: 960,
+	}
+	if _, _, _, err := r.beginHost(h); err != nil {
+		t.Fatal(err)
+	}
+	if !r.publicRoomCodeOK("123456") {
+		t.Fatal("host-selected room code was not activated")
+	}
+	if r.publicRoomCodeOK(testConfig().PublicRoomCode) {
+		t.Fatal("stale static room code remained active after host selected a new code")
+	}
+	r.mu.Lock()
+	state, _ := r.stateLocked(1_000_000_000, 0, 0, false)
+	r.mu.Unlock()
+	if got := state["public_room_code"]; got != "123456" {
+		t.Fatalf("guest state public_room_code=%v want 123456", got)
+	}
+}
