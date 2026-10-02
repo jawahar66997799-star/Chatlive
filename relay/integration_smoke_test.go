@@ -93,7 +93,7 @@ func readBinary(t *testing.T,c *websocket.Conn) []byte {
 }
 
 func TestSyntheticHostRelayGuestResumeSmoke(t *testing.T) {
-	ts,_,cfg:=smokeServer(t); defer ts.Close()
+	ts,s,cfg:=smokeServer(t); defer ts.Close()
 	const epoch=uint64(77)
 
 	host:=dialWS(t,wsFromHTTP(ts.URL,"/v1/ws/host"))
@@ -151,6 +151,15 @@ func TestSyntheticHostRelayGuestResumeSmoke(t *testing.T) {
 	ack2:=sendHostHello(t,host2,cfg,epoch,&last)
 	if got:=uint64(ack2["resume_after_sequence"].(float64));got!=1 {t.Fatalf("resume_after_sequence=%d",got)}
 	if err:=host2.WriteMessage(websocket.BinaryMessage,smokeFrame(epoch,2,960,[]byte{4,5,6}));err!=nil{t.Fatal(err)}
+	deadline:=time.Now().Add(500*time.Millisecond)
+	for {
+		s.room.mu.Lock()
+		seq:=s.room.lastSeq
+		s.room.mu.Unlock()
+		if seq>=2 { break }
+		if time.Now().After(deadline) { t.Fatalf("relay did not accept sequence 2 before resume; lastSeq=%d",seq) }
+		time.Sleep(time.Millisecond)
+	}
 
 	_ = guest.Close()
 	resumeURL:=wsFromHTTP(ts.URL,"/v1/ws/guest/"+cfg.GuestToken)+"?epoch=77&seq=1"
