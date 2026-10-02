@@ -246,6 +246,7 @@ class RelayClient(
                 .put("v", JlsProtocol.VERSION)
                 .put("room_id", config.room)
                 .put("host_secret", config.hostToken)
+                .put("public_room_code", config.publicRoomCode)
                 .put("epoch", epoch)
                 .put("codec", "opus")
                 .put("sample_rate", sampleRate)
