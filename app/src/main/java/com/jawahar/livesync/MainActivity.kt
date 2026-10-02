@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        refreshRoomUi()
 
         if (CaptureStateStore.state.value.health == CaptureHealth.IDLE &&
             SessionState.consumeInterruptedSession(this)
@@ -133,7 +134,7 @@ class MainActivity : ComponentActivity() {
         roomText = TextView(this).apply {
             textSize = 15f
             setPadding(0, 18, 0, 4)
-            text = "Room: —"
+            text = "Room code: —"
         }
         guestUrlText = TextView(this).apply {
             textSize = 14f
@@ -173,8 +174,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val createRoom = Button(this).apply {
+            text = "CREATE / CHANGE ROOM"
+            setOnClickListener { showCreateRoomDialog() }
+        }
+
         val relaySetup = Button(this).apply {
-            text = "SETUP RELAY"
+            text = "ADVANCED RELAY SETUP"
             setOnClickListener { showRelaySettings() }
         }
 
@@ -226,6 +232,7 @@ class MainActivity : ComponentActivity() {
         root.addView(detail, matchWrap())
         root.addView(startStop, matchWrap())
         root.addView(openYouTube, matchWrap())
+        root.addView(createRoom, matchWrap())
         root.addView(relaySetup, matchWrap())
         root.addView(shareGuest, matchWrap())
         root.addView(shareLog, matchWrap())
@@ -254,7 +261,7 @@ class MainActivity : ComponentActivity() {
                         .coerceIn(0, 100)
                     meter.progress = normalized
 
-                    roomText.text = "Room: " + s.room.ifBlank { "—" }
+                    roomText.text = "Room code: " + s.room.ifBlank { RelayConfig.load(this@MainActivity).publicRoomCode.ifBlank { "—" } }
                     guestUrlText.text = "Guest link: " + s.guestUrl.ifBlank { "—" }
 
                     stats.text = buildString {
@@ -332,10 +339,17 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun refreshRoomUi() {
+        val cfg = RelayConfig.load(this)
+        roomText.text = "Room code: " + cfg.publicRoomCode.ifBlank { "—" }
+        guestUrlText.text = "Guest link: " + cfg.guestUrl().ifBlank { "—" }
+    }
+
     private fun shareGuestLink() {
-        val link = CaptureStateStore.state.value.guestUrl
+        val stateLink = CaptureStateStore.state.value.guestUrl
+        val link = stateLink.ifBlank { RelayConfig.load(this).guestUrl() }
         if (link.isBlank()) {
-            renderError("Guest link is not available until the relay is configured.")
+            renderError("Create a room first, then share its guest link.")
             return
         }
         startActivity(
@@ -372,6 +386,57 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+
+    private fun showCreateRoomDialog() {
+        val current = RelayConfig.load(this)
+        val input = EditText(this).apply {
+            hint = "6-digit room code"
+            setText(current.publicRoomCode.ifBlank { RelayConfig.generatePublicRoomCode() })
+            inputType = InputType.TYPE_CLASS_NUMBER
+            isSingleLine = true
+            filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+            selectAll()
+        }
+
+        val randomButton = Button(this).apply {
+            text = "GENERATE RANDOM CODE"
+            setOnClickListener {
+                input.setText(RelayConfig.generatePublicRoomCode())
+                input.selectAll()
+            }
+        }
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(36, 0, 36, 0)
+            addView(input)
+            addView(randomButton)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Create room")
+            .setMessage(
+                "Choose any 6-digit code. Friends can enter this code on the Jawahar Live Sync website or use the generated link."
+            )
+            .setView(box)
+            .setPositiveButton("CREATE ROOM") { _, _ ->
+                val code = input.text.toString().filter { it.isDigit() }
+                if (!RelayConfig.isValidPublicRoomCode(code)) {
+                    renderError("Room code must be exactly 6 digits.")
+                } else {
+                    RelayConfig.savePublicRoomCode(this, code)
+                    refreshRoomUi()
+                    val running = isCaptureLikelyRunning(CaptureStateStore.state.value)
+                    detail.text = if (running) {
+                        "Room $code saved. STOP and START once so the relay activates the new code."
+                    } else {
+                        "Room $code ready. Tap START, then share the room code or guest link."
+                    }
+                }
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
 
     private fun showRelaySettings() {
         val current = RelayConfig.load(this)
@@ -453,9 +518,7 @@ class MainActivity : ComponentActivity() {
                         guestToken,
                         guestBase
                     )
-                    roomText.text = "Room: $roomId"
-                    guestUrlText.text =
-                        "Guest link: " + RelayConfig.load(this).guestUrl()
+                    refreshRoomUi()
                     detail.text =
                         "Relay settings saved. Stop and START a fresh host session."
                 }
