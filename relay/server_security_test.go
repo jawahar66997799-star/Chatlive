@@ -58,3 +58,35 @@ func TestMetricsBearerProtection(t *testing.T) {
 		t.Fatalf("authenticated metrics missing common delay gauge")
 	}
 }
+
+
+func TestPublicRoomPageRejectsWrongCode(t *testing.T) {
+	cfg := testConfig()
+	metrics := &Metrics{}
+	s := &Server{cfg: cfg, metrics: metrics, ip: newIPLimiter(cfg.MaxIPConns)}
+	s.room = newRoom(cfg, metrics)
+
+	req := httptest.NewRequest("GET", "http://example.test/room/111111", nil)
+	rec := httptest.NewRecorder()
+	s.publicRoomPage(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("wrong public room code status=%d want=%d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestPublicRoomPageAcceptsConfiguredCode(t *testing.T) {
+	cfg := testConfig()
+	metrics := &Metrics{}
+	s := &Server{cfg: cfg, metrics: metrics, ip: newIPLimiter(cfg.MaxIPConns)}
+	s.room = newRoom(cfg, metrics)
+
+	req := httptest.NewRequest("GET", "http://example.test/room/"+cfg.PublicRoomCode, nil)
+	rec := httptest.NewRecorder()
+	s.publicRoomPage(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured public room code status=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "Jawahar Live Sync") {
+		t.Fatal("guest player page was not served")
+	}
+}
