@@ -558,7 +558,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         renderError(
                             "Could not securely save the private relay credentials. " +
-                                "The previous working configuration was kept."
+                                "Re-open Advanced Relay Setup and verify the values before hosting."
                         )
                     }
                 }
