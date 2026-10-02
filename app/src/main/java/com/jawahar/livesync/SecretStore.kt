@@ -22,36 +22,56 @@ object SecretStore {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val VERSION = "v1"
 
-    fun get(context: Context, name: String): String? {
+    private val lock = Any()
+    private val processCache = mutableMapOf<String, String?>()
+
+    fun get(context: Context, name: String): String? = synchronized(lock) {
+        if (processCache.containsKey(name)) {
+            return@synchronized processCache[name]
+        }
+
         val encoded = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(name, null)
-            ?: return null
-        return try {
+            ?: return@synchronized null.also { processCache[name] = null }
+
+        val value = try {
             decrypt(name, encoded)
         } catch (_: Throwable) {
             null
         }
+        processCache[name] = value
+        value
     }
 
     /**
      * Writes the complete supplied secret set in one SharedPreferences commit.
-     * Encryption is completed before the commit, so a crypto failure does not
-     * partially replace persisted credentials.
+     * Encryption and verification are completed around one commit, so a crypto
+     * failure cannot partially replace persisted credentials.
      */
-    fun putAll(context: Context, values: Map<String, String>): Boolean {
-        return try {
+    fun putAll(context: Context, values: Map<String, String>): Boolean = synchronized(lock) {
+        try {
             val prepared = values.mapValues { (name, value) ->
                 if (value.isBlank()) null else encrypt(name, value)
             }
+
+            // Verify every ciphertext before replacing persisted state.
+            val verifiedBeforeCommit = values.all { (name, expected) ->
+                val encoded = prepared[name]
+                if (expected.isBlank()) encoded == null
+                else encoded != null && decrypt(name, encoded) == expected
+            }
+            if (!verifiedBeforeCommit) return@synchronized false
+
             val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             prepared.forEach { (name, encoded) ->
                 if (encoded == null) editor.remove(name) else editor.putString(name, encoded)
             }
-            if (!editor.commit()) return false
-            values.all { (name, expected) ->
-                if (expected.isBlank()) get(context, name).isNullOrBlank()
-                else get(context, name) == expected
+            if (!editor.commit()) return@synchronized false
+
+            values.forEach { (name, value) ->
+                processCache[name] = value.takeIf { it.isNotBlank() }
             }
+            true
         } catch (_: Throwable) {
             false
         }
@@ -74,7 +94,9 @@ object SecretStore {
 
     private fun decrypt(name: String, encoded: String): String {
         val parts = encoded.split(':', limit = 3)
-        require(parts.size == 3 && parts[0] == VERSION) { "Unsupported encrypted credential format." }
+        require(parts.size == 3 && parts[0] == VERSION) {
+            "Unsupported encrypted credential format."
+        }
         val iv = Base64.decode(parts[1], Base64.NO_WRAP)
         val ciphertext = Base64.decode(parts[2], Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
