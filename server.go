@@ -163,6 +163,7 @@ func (s *Server) hostWS(w http.ResponseWriter, r *http.Request) {
 		"v":                     protocolVersion,
 		"server_instance_id":    serverInstanceID,
 		"room_id":               hello.RoomID,
+		"public_room_code":      s.room.currentPublicRoomCode(),
 		"epoch":                 hello.Epoch,
 		"resume_after_sequence": resumeAfter,
 		"epoch_changed":         epochChanged,
@@ -245,9 +246,7 @@ func (s *Server) guestWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) publicRoomCodeOK(code string) bool {
-	return s.cfg.PublicRoomCode != "" &&
-		validPublicRoomCode(code) &&
-		secureEqual(code, s.cfg.PublicRoomCode)
+	return s.room.publicRoomCodeOK(code)
 }
 
 func (s *Server) roomCodeGuestWS(w http.ResponseWriter, r *http.Request) {
