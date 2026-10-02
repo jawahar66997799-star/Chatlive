@@ -129,6 +129,12 @@ data class RelayConfig(
             return RelayConfig(relay, room, hostToken, guestToken, guest, publicCode)
         }
 
+        fun loadPublicRoomCode(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_PUBLIC_ROOM_CODE, "")
+                .orEmpty()
+                .trim()
+
         fun saveOverride(
             context: Context,
             relayBaseUrl: String,
