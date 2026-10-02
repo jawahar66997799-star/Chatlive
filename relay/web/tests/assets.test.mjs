@@ -5,8 +5,10 @@ import {dirname,resolve} from 'node:path';
 
 const here=dirname(fileURLToPath(import.meta.url));
 const web=resolve(here,'..');
-const [html,player,worker,worklet,core,opusIndex,opusGenerated,opusLicense]=await Promise.all([
+const [html,landing,landingJs,player,worker,worklet,core,opusIndex,opusGenerated,opusLicense]=await Promise.all([
   readFile(resolve(web,'index.html'),'utf8'),
+  readFile(resolve(web,'landing.html'),'utf8'),
+  readFile(resolve(web,'landing.js'),'utf8'),
   readFile(resolve(web,'player.js'),'utf8'),
   readFile(resolve(web,'decoder-worker.js'),'utf8'),
   readFile(resolve(web,'worklet.js'),'utf8'),
@@ -172,3 +174,10 @@ assert.match(player,/underrun burst continuity/);
 assert.doesNotMatch(player,/setState\('Buffering…'/);
 
 console.log('JLS guest evidence-state regression guards: PASS');
+
+assert.match(landing,/Join a room/);
+assert.match(landing,/id="roomCode"/);
+assert.match(landing,/name="description"/);
+assert.match(landingJs,/\/room\//);
+assert.match(player,/roomMode==='code'/);
+assert.match(player,/\/v1\/ws\/room\//);
