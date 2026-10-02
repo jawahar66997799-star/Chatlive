@@ -2,8 +2,16 @@ import {ClockModel,TimelineTracker,AdaptiveDelay,SlewValue,OutputTimeMapper,Serv
 
 const q=s=>document.querySelector(s);
 const ui={room:q('#room'),state:q('#state'),reason:q('#reason'),dot:q('#dot'),join:q('#join'),note:q('#note'),diag:q('#diagText')};
-const room=location.pathname.startsWith('/r/')?decodeURIComponent(location.pathname.slice(3)):(new URLSearchParams(location.search).get('room')||'');
-ui.room.textContent=room?(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'private room'):'invalid link';
+const roomPath=location.pathname;
+const roomMode=roomPath.startsWith('/room/')?'code':roomPath.startsWith('/r/')?'token':'legacy';
+const room=roomMode==='code'
+  ? decodeURIComponent(roomPath.slice('/room/'.length))
+  : roomMode==='token'
+    ? decodeURIComponent(roomPath.slice(3))
+    : (new URLSearchParams(location.search).get('room')||'');
+ui.room.textContent=room
+  ? (roomMode==='code'?room:(room.length>12?room.slice(0,6)+'…'+room.slice(-4):'private room'))
+  : 'invalid link';
 
 const clock=new ClockModel(),timeline=new TimelineTracker();
 const suggestedD=new AdaptiveDelay({initialMs:850,floorMs:400,ceilingMs:1000});
@@ -117,7 +125,10 @@ function applyDiagnosisState(){applyPipelineState();}
 
 function wsURL(){
   const base=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;
-  const u=new URL(base+'/v1/ws/guest/'+encodeURIComponent(room));
+  const socketPath=roomMode==='code'
+    ? '/v1/ws/room/'+encodeURIComponent(room)
+    : '/v1/ws/guest/'+encodeURIComponent(room);
+  const u=new URL(base+socketPath);
   if(lastEpoch!==null&&lastSeq!==null){u.searchParams.set('epoch',lastEpoch);u.searchParams.set('seq',lastSeq)}
   return u.href;
 }
