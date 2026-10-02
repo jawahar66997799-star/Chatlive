@@ -56,9 +56,11 @@ type listenerStat struct {
 type Room struct {
 	mu sync.Mutex
 
-	id         string
-	hostSecret string
-	guestToken string
+	id                    string
+	hostSecret            string
+	guestToken            string
+	publicRoomCode        string
+	defaultPublicRoomCode string
 
 	hostOnline        bool
 	hostGen           uint64
@@ -105,9 +107,11 @@ type Room struct {
 
 func newRoom(cfg Config, metrics *Metrics) *Room {
 	return &Room{
-		id:            cfg.RoomID,
-		hostSecret:    cfg.HostSecret,
-		guestToken:       cfg.GuestToken,
+		id:                    cfg.RoomID,
+		hostSecret:            cfg.HostSecret,
+		guestToken:            cfg.GuestToken,
+		publicRoomCode:        cfg.PublicRoomCode,
+		defaultPublicRoomCode: cfg.PublicRoomCode,
 		guests:           make(map[*guestConn]struct{}),
 		listenerStats:    make(map[uint64]listenerStat),
 		maxRingBytes:     cfg.MaxRingBytes,
@@ -146,6 +150,20 @@ func (r *Room) authGuest(token string) bool {
 	return secureEqual(r.guestToken, token)
 }
 
+func (r *Room) publicRoomCodeOK(code string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.publicRoomCode != "" &&
+		validPublicRoomCode(code) &&
+		secureEqual(code, r.publicRoomCode)
+}
+
+func (r *Room) currentPublicRoomCode() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.publicRoomCode
+}
+
 func (r *Room) beginHost(h HostHello) (generation uint64, resumeAfter uint64, epochChanged bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -157,6 +175,11 @@ func (r *Room) beginHost(h HostHello) (generation uint64, resumeAfter uint64, ep
 	r.hostGen++
 	generation = r.hostGen
 	r.hostOnline = true
+	if h.PublicRoomCode != "" {
+		r.publicRoomCode = h.PublicRoomCode
+	} else {
+		r.publicRoomCode = r.defaultPublicRoomCode
+	}
 	r.offlineAt = time.Time{}
 	r.lastAudioNS = 0
 	r.streamState = streamHostConnectedNoAudio
