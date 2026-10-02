@@ -16,6 +16,9 @@ host_secret = os.environ["HOST_SECRET"]
 guest_token = os.environ["GUEST_TOKEN"]
 expect_protected_metrics = os.environ.get("EXPECT_PROTECTED_METRICS", "1") == "1"
 metrics_token = os.environ.get("METRICS_TOKEN", "").strip()
+public_room_code = os.environ.get("PUBLIC_ROOM_CODE", "").strip() or f"{secrets.randbelow(1_000_000):06d}"
+if len(public_room_code) != 6 or not public_room_code.isdigit():
+    raise RuntimeError("PUBLIC_ROOM_CODE must be exactly 6 digits")
 wire = ">4sBBBBQQQQQIHBBBBHI"
 
 
@@ -95,21 +98,29 @@ async def main():
     async with websockets.connect(wsbase + "/v1/ws/host", open_timeout=15, ping_interval=None) as host:
         await host.send(json.dumps({
             "type":"hello_host","v":1,"room_id":room,"host_secret":host_secret,
+            "public_room_code":public_room_code,
             "epoch":epoch,"codec":"opus","sample_rate":48000,"channels":2,
             "layer":0,"frame_samples":960
         }))
         host_ack = json.loads(await asyncio.wait_for(host.recv(), 10))
         if host_ack.get("server_instance_id") != instance:
             raise RuntimeError("host ack server_instance_id mismatch")
+        if host_ack.get("public_room_code") != public_room_code:
+            raise RuntimeError("host ack public_room_code mismatch")
+        s, _, room_page = http_get("/room/" + public_room_code)
+        if s != 200 or b"Jawahar Live Sync" not in room_page:
+            raise RuntimeError("friendly room page failed")
         if host_ack.get("resume_after_sequence") not in (0, None):
             raise RuntimeError(f"fresh smoke epoch unexpectedly resumed at sequence {host_ack.get('resume_after_sequence')}")
 
-        async with websockets.connect(wsbase + "/v1/ws/guest/" + guest_token, open_timeout=15, ping_interval=None) as guest:
+        async with websockets.connect(wsbase + "/v1/ws/room/" + public_room_code, open_timeout=15, ping_interval=None) as guest:
             state = json.loads(await asyncio.wait_for(guest.recv(), 10))
             if state.get("server_instance_id") != instance:
                 raise RuntimeError("guest state server_instance_id mismatch")
             if state.get("epoch") != str(epoch):
                 raise RuntimeError(f"guest state epoch is not exact JSON-safe string: {state.get('epoch')!r}")
+            if state.get("public_room_code") != public_room_code:
+                raise RuntimeError("guest state public_room_code mismatch")
 
             t0 = time.monotonic_ns()
             await guest.send(json.dumps({"type":"clock_req","v":1,"id":"smoke","t0_guest_ns":t0}))
@@ -162,6 +173,9 @@ async def main():
                 "binary_frames": binary,
                 "epoch": epoch,
                 "server_instance_id": instance,
+                "public_room_code": public_room_code,
+                "friendly_room_page": True,
+                "friendly_room_websocket": True,
                 "metrics_protected": metrics_protected,
                 "metrics_authenticated": metrics_authenticated,
                 "csp_present": bool(csp),
