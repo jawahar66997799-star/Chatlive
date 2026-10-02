@@ -262,8 +262,18 @@ class MainActivity : ComponentActivity() {
                         .coerceIn(0, 100)
                     meter.progress = normalized
 
-                    roomText.text = "Room code: " + s.room.ifBlank { RelayConfig.load(this@MainActivity).publicRoomCode.ifBlank { "—" } }
-                    guestUrlText.text = "Guest link: " + s.guestUrl.ifBlank { "—" }
+                    val hostingActive =
+                        isCaptureLikelyRunning(s) && s.relayState == RelayState.CONNECTED
+                    val visibleRoom = s.room.ifBlank {
+                        RelayConfig.loadPublicRoomCode(this@MainActivity).ifBlank { "—" }
+                    }
+                    roomText.text =
+                        "Room code (" + (if (hostingActive) "ACTIVE" else "SAVED") + "): " + visibleRoom
+                    guestUrlText.text = if (hostingActive && s.guestUrl.isNotBlank()) {
+                        "Guest link (ACTIVE): " + s.guestUrl
+                    } else {
+                        "Guest link: available after Relay: CONNECTED"
+                    }
 
                     stats.text = buildString {
                         append("Audio: ")
@@ -341,16 +351,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshRoomUi() {
-        val cfg = RelayConfig.load(this)
-        roomText.text = "Room code: " + cfg.publicRoomCode.ifBlank { "—" }
-        guestUrlText.text = "Guest link: " + cfg.guestUrl().ifBlank { "—" }
+        val code = RelayConfig.loadPublicRoomCode(this)
+        roomText.text = "Room code (SAVED): " + code.ifBlank { "—" }
+        guestUrlText.text = "Guest link: available after Relay: CONNECTED"
     }
 
     private fun shareGuestLink() {
-        val stateLink = CaptureStateStore.state.value.guestUrl
-        val link = stateLink.ifBlank { RelayConfig.load(this).guestUrl() }
+        val state = CaptureStateStore.state.value
+        if (!isCaptureLikelyRunning(state) || state.relayState != RelayState.CONNECTED) {
+            renderError(
+                "This room is not active yet. Tap START and wait for Relay: CONNECTED " +
+                    "before sharing the guest link."
+            )
+            return
+        }
+        val link = state.guestUrl
         if (link.isBlank()) {
-            renderError("Create a room first, then share its guest link.")
+            renderError("Relay is connected, but no active public guest link is available.")
             return
         }
         startActivity(
@@ -389,6 +406,24 @@ class MainActivity : ComponentActivity() {
 
 
     private fun showCreateRoomDialog() {
+        val state = CaptureStateStore.state.value
+        if (isCaptureLikelyRunning(state)) {
+            AlertDialog.Builder(this)
+                .setTitle("Stop hosting to change room")
+                .setMessage(
+                    "The active relay session keeps its current room code until hosting stops. " +
+                        "Stop first so the saved code can never disagree with the active room."
+                )
+                .setPositiveButton("STOP HOSTING") { _, _ ->
+                    stopCapture()
+                    detail.text =
+                        "Stopping the active room. Create or change the room after Capture becomes IDLE."
+                }
+                .setNegativeButton("CANCEL", null)
+                .show()
+            return
+        }
+
         val current = RelayConfig.load(this)
         val input = EditText(this).apply {
             hint = "6-digit room code"
@@ -417,7 +452,8 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle("Create room")
             .setMessage(
-                "Choose any 6-digit code. Friends can enter this code on the Jawahar Live Sync website or use the generated link."
+                "Use the generated 6-digit code when possible. The code is a shareable room address, " +
+                    "not a private host credential. It becomes ACTIVE only after START reaches Relay: CONNECTED."
             )
             .setView(box)
             .setPositiveButton("CREATE ROOM") { _, _ ->
@@ -427,12 +463,9 @@ class MainActivity : ComponentActivity() {
                 } else {
                     RelayConfig.savePublicRoomCode(this, code)
                     refreshRoomUi()
-                    val running = isCaptureLikelyRunning(CaptureStateStore.state.value)
-                    detail.text = if (running) {
-                        "Room $code saved. STOP and START once so the relay activates the new code."
-                    } else {
-                        "Room $code ready. Tap START, then share the room code or guest link."
-                    }
+                    detail.text =
+                        "Room $code SAVED. Tap START and wait for Relay: CONNECTED. " +
+                            "Only then is the room ACTIVE and ready to share."
                 }
             }
             .setNegativeButton("CANCEL", null)
