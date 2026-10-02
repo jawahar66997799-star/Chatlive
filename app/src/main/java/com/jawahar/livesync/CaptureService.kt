@@ -696,7 +696,6 @@ class CaptureService : Service() {
             logWriter?.appendLine("# youtube=" + packageVersion("com.google.android.youtube"))
             logWriter?.appendLine("# youtube_music=" + packageVersion("com.google.android.apps.youtube.music"))
             logWriter?.appendLine("# protocol=" + JlsProtocol.VERSION + " codec=opus sample_rate=48000 channels=2 frame_ms=" + FRAME_MS + " target_bitrate=" + TARGET_BITRATE + " dtx=false fec=false")
-            logWriter?.appendLine("# public_room_code=" + relayConfig.publicRoomCode)
             logWriter?.appendLine("elapsed_ms,health,capture_health,relay_state,broken_stage,pipeline_capture,pipeline_pcm,pipeline_encoder,pipeline_uplink_queue,pipeline_wss,pipeline_relay_ack_state,rms_dbfs,peak_dbfs,active_playback,frames_captured,read_faults,packets_encoded,bytes_uploaded,bitrate_bps,encode_us,relay_rtt_ms,reconnects,encoder_queue_depth,send_buffer_depth,websocket_queue_bytes,last_read_age_ms,last_pcm_age_ms,last_encoded_age_ms,last_send_age_ms,last_relay_control_age_ms,relay_resume_after_sequence,dropped_frames,projection_stops,thermal_status,battery_pct")
             logWriter?.flush()
         }
