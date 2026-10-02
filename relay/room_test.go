@@ -10,6 +10,7 @@ func testConfig() Config {
 		RoomID:       "0123456789abcdef0123456789abcdef",
 		HostSecret:   "abcdef0123456789abcdef0123456789",
 		GuestToken:   "abcdefghijklmnopqrstuv",
+		PublicRoomCode: "482731",
 		MaxGuests:    250,
 		MaxPayload:   16384,
 		MaxMessage:   32768,
@@ -330,5 +331,19 @@ func TestExplicitStreamStateTransitions(t *testing.T) {
 	r.mu.Unlock()
 	if got := state["stream_state"]; got != streamConnectedNoHost {
 		t.Fatalf("offline state = %v, want %s", got, streamConnectedNoHost)
+	}
+}
+
+
+func TestPublicRoomCodeValidation(t *testing.T) {
+	for _, good := range []string{"000000", "482731", "999999"} {
+		if !validPublicRoomCode(good) {
+			t.Fatalf("valid code rejected: %q", good)
+		}
+	}
+	for _, bad := range []string{"", "12345", "1234567", "ABC123", "12 345"} {
+		if validPublicRoomCode(bad) {
+			t.Fatalf("invalid code accepted: %q", bad)
+		}
 	}
 }
