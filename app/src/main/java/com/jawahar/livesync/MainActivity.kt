@@ -310,12 +310,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun isCaptureLikelyRunning(s: CaptureSnapshot): Boolean {
-        return s.secondsRunning > 0 &&
-            s.captureHealth !in setOf(
-                CaptureHealth.IDLE,
-                CaptureHealth.ERROR,
-                CaptureHealth.PROJECTION_STOPPED
-            )
+        return s.captureHealth !in setOf(
+            CaptureHealth.IDLE,
+            CaptureHealth.ERROR,
+            CaptureHealth.PROJECTION_STOPPED
+        )
     }
 
     private fun ensurePermissionsThenStart() {
