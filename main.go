@@ -39,6 +39,7 @@ type Config struct {
 	RoomID       string
 	HostSecret   string
 	GuestToken   string
+	PublicRoomCode string
 	MaxGuests    int
 	MaxPayload   int
 	MaxMessage   int64
@@ -66,6 +67,7 @@ func loadConfig() (Config, error) {
 		RoomID:       os.Getenv("JLS_ROOM_ID"),
 		HostSecret:   os.Getenv("JLS_HOST_SECRET"),
 		GuestToken:   os.Getenv("JLS_GUEST_TOKEN"),
+		PublicRoomCode: strings.TrimSpace(os.Getenv("JLS_PUBLIC_ROOM_CODE")),
 		MaxGuests:    envInt("JLS_MAX_GUESTS", 250),
 		MaxPayload:   envInt("JLS_MAX_PAYLOAD_BYTES", 16384),
 		MaxMessage:   int64(envInt("JLS_MAX_MESSAGE_BYTES", 32768)),
@@ -90,6 +92,9 @@ func loadConfig() (Config, error) {
 	}
 	if len(cfg.RoomID) < 32 || len(cfg.HostSecret) < 32 || len(cfg.GuestToken) < 22 {
 		return Config{}, fmt.Errorf("JLS_ROOM_ID, JLS_HOST_SECRET, and JLS_GUEST_TOKEN must be configured with >=128-bit unguessable values")
+	}
+	if cfg.PublicRoomCode != "" && !validPublicRoomCode(cfg.PublicRoomCode) {
+		return Config{}, fmt.Errorf("JLS_PUBLIC_ROOM_CODE must be exactly 6 digits")
 	}
 	if cfg.MaxGuests < 1 || cfg.MaxGuests > 5000 {
 		return Config{}, fmt.Errorf("JLS_MAX_GUESTS outside safe range")
@@ -127,6 +132,18 @@ func envInt(k string, d int) int {
 		return d
 	}
 	return n
+}
+
+func validPublicRoomCode(v string) bool {
+	if len(v) != 6 {
+		return false
+	}
+	for _, ch := range v {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func envBool(k string, d bool) bool {
@@ -212,9 +229,13 @@ func main() {
 	mux.HandleFunc("/v1/clock", s.clockHTTP)
 	mux.HandleFunc("/v1/ws/host", s.hostWS)
 	mux.HandleFunc("/v1/ws/guest/", s.guestWS)
+	mux.HandleFunc("/v1/ws/room/", s.roomCodeGuestWS)
 	// Compatibility alias for the existing guest page. room query is a guest token, never a friendly room name.
 	mux.HandleFunc("/ws/listen", s.legacyGuestWS)
 	mux.HandleFunc("/r/", serveWeb)
+	mux.HandleFunc("/room/", s.publicRoomPage)
+	mux.HandleFunc("/landing.js", serveWeb)
+	mux.HandleFunc("/robots.txt", serveWeb)
 	mux.HandleFunc("/worklet.js", serveWeb)
 	mux.HandleFunc("/player.js", serveWeb)
 	mux.HandleFunc("/decoder-worker.js", serveWeb)
@@ -275,6 +296,12 @@ func serveWeb(w http.ResponseWriter, r *http.Request) {
 	contentType := "text/html; charset=utf-8"
 
 	switch r.URL.Path {
+	case "/":
+		name, contentType = "landing.html", "text/html; charset=utf-8"
+	case "/landing.js":
+		name, contentType = "landing.js", "text/javascript; charset=utf-8"
+	case "/robots.txt":
+		name, contentType = "robots.txt", "text/plain; charset=utf-8"
 	case "/worklet.js":
 		name, contentType = "worklet.js", "text/javascript; charset=utf-8"
 	case "/player.js":
