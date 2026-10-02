@@ -57,3 +57,23 @@ func TestParseAudioFrameRejectsOversizePayload(t *testing.T) {
 		t.Fatalf("expected errPayloadTooLarge, got %v", err)
 	}
 }
+
+
+func TestValidateHostHelloPublicRoomCode(t *testing.T) {
+	base := HostHello{
+		Type: "hello_host", V: protocolVersion,
+		RoomID: "0123456789abcdef0123456789abcdef",
+		HostSecret: "abcdef0123456789abcdef0123456789",
+		Epoch: 1, Codec: "opus", SampleRate: 48000, Channels: 2, Layer: 0, FrameSamples: 960,
+	}
+	good := base
+	good.PublicRoomCode = "654321"
+	if err := validateHostHello(&good); err != nil {
+		t.Fatalf("valid public room code rejected: %v", err)
+	}
+	bad := base
+	bad.PublicRoomCode = "ABC123"
+	if err := validateHostHello(&bad); err == nil {
+		t.Fatal("invalid public room code was accepted")
+	}
+}
