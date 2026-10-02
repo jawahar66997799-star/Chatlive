@@ -68,24 +68,72 @@ data class RelayConfig(
         private const val KEY_GUEST = "guest"
         private const val KEY_PUBLIC_ROOM_CODE = "public_room_code"
 
+        internal const val SECRET_ROOM = "private_room_id"
+        internal const val SECRET_HOST_TOKEN = "host_token"
+        internal const val SECRET_GUEST_TOKEN = "guest_token"
+
         fun load(context: Context): RelayConfig {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val room = prefs.getString(KEY_ROOM, "").orEmpty().trim()
+
+            val secureRoom = SecretStore.get(context, SECRET_ROOM)?.trim().orEmpty()
+            val secureHostToken = SecretStore.get(context, SECRET_HOST_TOKEN)?.trim().orEmpty()
+            val secureGuestToken = SecretStore.get(context, SECRET_GUEST_TOKEN)?.trim().orEmpty()
+
+            val legacyRoom = prefs.getString(KEY_ROOM, "").orEmpty().trim()
+            val legacyHostToken = prefs.getString(KEY_TOKEN, "").orEmpty().trim()
+            val legacyGuestToken = prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
+
+            val room = secureRoom
+                .ifBlank { legacyRoom }
                 .ifBlank { BuildConfig.DEFAULT_ROOM.trim() }
-                .ifBlank {
-                    randomToken(24).also { prefs.edit().putString(KEY_ROOM, it).apply() }
+                .ifBlank { randomToken(24) }
+            val hostToken = secureHostToken.ifBlank { legacyHostToken }
+            val guestToken = secureGuestToken.ifBlank { legacyGuestToken }
+
+            val hasLegacyPrivateValues =
+                prefs.contains(KEY_ROOM) ||
+                    prefs.contains(KEY_TOKEN) ||
+                    prefs.contains(KEY_GUEST_TOKEN)
+            val needsSecureRoom = secureRoom.isBlank()
+
+            if (hasLegacyPrivateValues || needsSecureRoom) {
+                val migrated = SecretStore.putAll(
+                    context,
+                    mapOf(
+                        SECRET_ROOM to room,
+                        SECRET_HOST_TOKEN to hostToken,
+                        SECRET_GUEST_TOKEN to guestToken
+                    )
+                )
+                if (migrated) {
+                    // Remove plaintext only after encrypted write + read-back verification succeeded.
+                    prefs.edit()
+                        .remove(KEY_ROOM)
+                        .remove(KEY_TOKEN)
+                        .remove(KEY_GUEST_TOKEN)
+                        .commit()
+                } else if (legacyRoom.isBlank() && secureRoom.isBlank()) {
+                    // Functional fallback: never rotate the private room on every load if a device
+                    // has an unavailable/broken Keystore. This does not make storage less secure
+                    // than the pre-migration release and can be retried on the next load.
+                    prefs.edit().putString(KEY_ROOM, room).commit()
                 }
+            }
 
             val relay = prefs.getString(KEY_RELAY, "").orEmpty().trim()
                 .ifBlank { BuildConfig.DEFAULT_RELAY_URL.trim() }
-            val token = prefs.getString(KEY_TOKEN, "").orEmpty().trim()
-            val guestToken = prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
             val guest = prefs.getString(KEY_GUEST, "").orEmpty().trim()
                 .ifBlank { BuildConfig.DEFAULT_GUEST_BASE_URL.trim() }
             val publicCode = prefs.getString(KEY_PUBLIC_ROOM_CODE, "").orEmpty().trim()
 
-            return RelayConfig(relay, room, token, guestToken, guest, publicCode)
+            return RelayConfig(relay, room, hostToken, guestToken, guest, publicCode)
         }
+
+        fun loadPublicRoomCode(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_PUBLIC_ROOM_CODE, "")
+                .orEmpty()
+                .trim()
 
         fun saveOverride(
             context: Context,
@@ -95,16 +143,36 @@ data class RelayConfig(
             guestToken: String,
             guestBaseUrl: String = "",
             publicRoomCode: String = load(context).publicRoomCode
-        ) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
+        ): Boolean {
+            val previous = load(context)
+            val secrets = mapOf(
+                SECRET_ROOM to room.trim(),
+                SECRET_HOST_TOKEN to hostToken.trim(),
+                SECRET_GUEST_TOKEN to guestToken.trim()
+            )
+            if (!SecretStore.putAll(context, secrets)) return false
+
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val committed = prefs.edit()
                 .putString(KEY_RELAY, relayBaseUrl.trim())
-                .putString(KEY_ROOM, room.trim())
-                .putString(KEY_TOKEN, hostToken.trim())
-                .putString(KEY_GUEST_TOKEN, guestToken.trim())
                 .putString(KEY_GUEST, guestBaseUrl.trim())
                 .putString(KEY_PUBLIC_ROOM_CODE, publicRoomCode.trim())
-                .apply()
+                .remove(KEY_ROOM)
+                .remove(KEY_TOKEN)
+                .remove(KEY_GUEST_TOKEN)
+                .commit()
+
+            if (!committed) {
+                SecretStore.putAll(
+                    context,
+                    mapOf(
+                        SECRET_ROOM to previous.room,
+                        SECRET_HOST_TOKEN to previous.hostToken,
+                        SECRET_GUEST_TOKEN to previous.guestToken
+                    )
+                )
+            }
+            return committed
         }
 
         fun savePublicRoomCode(context: Context, code: String) {
