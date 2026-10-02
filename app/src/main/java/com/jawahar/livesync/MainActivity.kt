@@ -164,13 +164,13 @@ class MainActivity : ComponentActivity() {
 
         val openYouTube = Button(this).apply {
             text = "OPEN YOUTUBE"
+            setOnClickListener { openOfficialSourceApp("com.google.android.youtube", "YouTube") }
+        }
+
+        val openYouTubeMusic = Button(this).apply {
+            text = "OPEN YOUTUBE MUSIC"
             setOnClickListener {
-                val launch = packageManager.getLaunchIntentForPackage("com.google.android.youtube")
-                if (launch != null) {
-                    startActivity(launch)
-                } else {
-                    renderError("Official YouTube app was not found.")
-                }
+                openOfficialSourceApp("com.google.android.apps.youtube.music", "YouTube Music")
             }
         }
 
@@ -232,6 +232,7 @@ class MainActivity : ComponentActivity() {
         root.addView(detail, matchWrap())
         root.addView(startStop, matchWrap())
         root.addView(openYouTube, matchWrap())
+        root.addView(openYouTubeMusic, matchWrap())
         root.addView(createRoom, matchWrap())
         root.addView(relaySetup, matchWrap())
         root.addView(shareGuest, matchWrap())
@@ -510,7 +511,7 @@ class MainActivity : ComponentActivity() {
                 } else if (guestToken.length < 22) {
                     renderError("Guest token must be at least 22 characters.")
                 } else {
-                    RelayConfig.saveOverride(
+                    val saved = RelayConfig.saveOverride(
                         this,
                         relayUrl,
                         roomId,
@@ -518,13 +519,29 @@ class MainActivity : ComponentActivity() {
                         guestToken,
                         guestBase
                     )
-                    refreshRoomUi()
-                    detail.text =
-                        "Relay settings saved. Stop and START a fresh host session."
+                    if (saved) {
+                        refreshRoomUi()
+                        detail.text =
+                            "Relay settings saved securely. Stop and START a fresh host session."
+                    } else {
+                        renderError(
+                            "Could not securely save the private relay credentials. " +
+                                "The previous working configuration was kept."
+                        )
+                    }
                 }
             }
             .setNegativeButton("CANCEL", null)
             .show()
+    }
+
+    private fun openOfficialSourceApp(packageName: String, displayName: String) {
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        if (launch != null) {
+            startActivity(launch)
+        } else {
+            renderError("Official $displayName app was not found.")
+        }
     }
 
     private fun renderError(message: String) {
