@@ -80,6 +80,10 @@ jobs:
           cmp relay/server.go server.go
           cmp relay/protocol.go protocol.go
           cmp relay/room.go room.go
+          cmp relay/web/index.html web/index.html
+          cmp relay/web/landing.html web/landing.html
+          cmp relay/web/landing.js web/landing.js
+          cmp relay/web/robots.txt web/robots.txt
           cmp relay/web/player.js web/player.js
           cmp relay/web/decoder-worker.js web/decoder-worker.js
           cmp relay/web/sync-core.mjs web/sync-core.mjs
