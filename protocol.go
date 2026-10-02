@@ -121,6 +121,7 @@ type HostHello struct {
 	V             int     `json:"v"`
 	RoomID        string  `json:"room_id"`
 	HostSecret    string  `json:"host_secret"`
+	PublicRoomCode string `json:"public_room_code,omitempty"`
 	Epoch         uint64  `json:"epoch"`
 	Codec         string  `json:"codec"`
 	SampleRate    uint32  `json:"sample_rate"`
@@ -174,6 +175,9 @@ func validateHostHello(h *HostHello) error {
 	}
 	if h.RoomID == "" || h.HostSecret == "" {
 		return fmt.Errorf("room_id and host_secret are required")
+	}
+	if h.PublicRoomCode != "" && !validPublicRoomCode(h.PublicRoomCode) {
+		return fmt.Errorf("public_room_code must be exactly 6 digits")
 	}
 	if h.Epoch == 0 {
 		return fmt.Errorf("epoch must be non-zero")
