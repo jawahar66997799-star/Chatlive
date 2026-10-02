@@ -4,13 +4,15 @@ import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import java.security.SecureRandom
+import java.util.Locale
 
 data class RelayConfig(
     val relayBaseUrl: String,
     val room: String,
     val hostToken: String,
     val guestToken: String,
-    val guestBaseUrl: String
+    val guestBaseUrl: String,
+    val publicRoomCode: String
 ) {
     val enabled: Boolean
         get() = relayBaseUrl.startsWith("wss://")
@@ -31,24 +33,30 @@ data class RelayConfig(
             .toString()
     }
 
+    fun guestBase(): String {
+        if (guestBaseUrl.isNotBlank()) return guestBaseUrl.trimEnd('/')
+        if (!enabled) return ""
+        val u = Uri.parse(relayBaseUrl)
+        return u.buildUpon()
+            .scheme("https")
+            .path("")
+            .clearQuery()
+            .fragment(null)
+            .build()
+            .toString()
+            .trimEnd('/')
+    }
+
     fun guestUrl(): String {
-        if (guestToken.isBlank()) return ""
-        val base = if (guestBaseUrl.isNotBlank()) {
-            guestBaseUrl.trimEnd('/')
-        } else if (enabled) {
-            val u = Uri.parse(relayBaseUrl)
-            u.buildUpon()
-                .scheme("https")
-                .path("")
-                .clearQuery()
-                .fragment(null)
-                .build()
-                .toString()
-                .trimEnd('/')
+        val base = guestBase()
+        if (base.isBlank()) return ""
+        return if (isValidPublicRoomCode(publicRoomCode)) {
+            "${base}/room/${Uri.encode(publicRoomCode)}"
+        } else if (guestToken.isNotBlank()) {
+            "${base}/r/${Uri.encode(guestToken)}"
         } else {
             ""
         }
-        return if (base.isBlank()) "" else "$base/r/${Uri.encode(guestToken)}"
     }
 
     companion object {
@@ -58,6 +66,7 @@ data class RelayConfig(
         private const val KEY_TOKEN = "token"
         private const val KEY_GUEST_TOKEN = "guest_token"
         private const val KEY_GUEST = "guest"
+        private const val KEY_PUBLIC_ROOM_CODE = "public_room_code"
 
         fun load(context: Context): RelayConfig {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -73,7 +82,9 @@ data class RelayConfig(
             val guestToken = prefs.getString(KEY_GUEST_TOKEN, "").orEmpty().trim()
             val guest = prefs.getString(KEY_GUEST, "").orEmpty().trim()
                 .ifBlank { BuildConfig.DEFAULT_GUEST_BASE_URL.trim() }
-            return RelayConfig(relay, room, token, guestToken, guest)
+            val publicCode = prefs.getString(KEY_PUBLIC_ROOM_CODE, "").orEmpty().trim()
+
+            return RelayConfig(relay, room, token, guestToken, guest, publicCode)
         }
 
         fun saveOverride(
@@ -82,7 +93,8 @@ data class RelayConfig(
             room: String,
             hostToken: String,
             guestToken: String,
-            guestBaseUrl: String = ""
+            guestBaseUrl: String = "",
+            publicRoomCode: String = load(context).publicRoomCode
         ) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
@@ -91,8 +103,25 @@ data class RelayConfig(
                 .putString(KEY_TOKEN, hostToken.trim())
                 .putString(KEY_GUEST_TOKEN, guestToken.trim())
                 .putString(KEY_GUEST, guestBaseUrl.trim())
+                .putString(KEY_PUBLIC_ROOM_CODE, publicRoomCode.trim())
                 .apply()
         }
+
+        fun savePublicRoomCode(context: Context, code: String) {
+            require(isValidPublicRoomCode(code)) { "Room code must be exactly 6 digits." }
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_PUBLIC_ROOM_CODE, code.trim())
+                .apply()
+        }
+
+        fun generatePublicRoomCode(): String {
+            val n = SecureRandom().nextInt(1_000_000)
+            return String.format(Locale.US, "%06d", n)
+        }
+
+        fun isValidPublicRoomCode(code: String): Boolean =
+            code.length == 6 && code.all { it in '0'..'9' }
 
         private fun randomToken(bytes: Int): String {
             val raw = ByteArray(bytes)
