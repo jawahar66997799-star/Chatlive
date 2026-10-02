@@ -244,6 +244,34 @@ func (s *Server) guestWS(w http.ResponseWriter, r *http.Request) {
 	s.serveGuestWS(w, r, token)
 }
 
+func (s *Server) publicRoomCodeOK(code string) bool {
+	return s.cfg.PublicRoomCode != "" &&
+		validPublicRoomCode(code) &&
+		secureEqual(code, s.cfg.PublicRoomCode)
+}
+
+func (s *Server) roomCodeGuestWS(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimPrefix(r.URL.Path, "/v1/ws/room/")
+	if !s.publicRoomCodeOK(code) {
+		s.metrics.authFailures.Add(1)
+		http.Error(w, "room not found", http.StatusNotFound)
+		return
+	}
+	// The short room code is a listener-facing alias only. Internally the relay
+	// still authorizes against the long private guest token, which is never
+	// exposed in the URL or browser page.
+	s.serveGuestWS(w, r, s.cfg.GuestToken)
+}
+
+func (s *Server) publicRoomPage(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimPrefix(r.URL.Path, "/room/")
+	if !s.publicRoomCodeOK(code) {
+		http.NotFound(w, r)
+		return
+	}
+	serveWeb(w, r)
+}
+
 func (s *Server) legacyGuestWS(w http.ResponseWriter, r *http.Request) {
 	s.serveGuestWS(w, r, r.URL.Query().Get("room"))
 }
