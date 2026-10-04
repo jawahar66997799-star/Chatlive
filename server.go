@@ -264,10 +264,13 @@ func (s *Server) roomCodeGuestWS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) publicRoomPage(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimPrefix(r.URL.Path, "/room/")
-	if !s.publicRoomCodeOK(code) {
+	if !validPublicRoomCode(code) {
 		http.NotFound(w, r)
 		return
 	}
+	// A valid friendly room page may be opened before the host is online.
+	// The guest WebSocket remains authorization-gated by the currently active
+	// host-selected code, so inactive codes cannot receive any room audio.
 	serveWeb(w, r)
 }
 
