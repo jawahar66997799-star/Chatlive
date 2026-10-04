@@ -181,3 +181,13 @@ assert.match(landing,/name="description"/);
 assert.match(landingJs,/\/room\//);
 assert.match(player,/roomMode==='code'/);
 assert.match(player,/\/v1\/ws\/room\//);
+
+
+assert.match(landing,/Create a room/);
+assert.match(landing,/JOIN ROOM/);
+assert.match(landing,/OPEN HOST APP/);
+assert.match(landing,/COPY FRIEND LINK/);
+assert.match(landingJs,/intent:\/\/host\?room=/);
+assert.match(landingJs,/jls:\/\/host\?room=/);
+assert.match(landingJs,/navigator\.share/);
+assert.match(landingJs,/\/room\//);
