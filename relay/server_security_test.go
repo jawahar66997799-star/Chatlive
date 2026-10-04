@@ -90,3 +90,29 @@ func TestPublicRoomPageAcceptsConfiguredCode(t *testing.T) {
 		t.Fatal("guest player page was not served")
 	}
 }
+
+
+func TestPublicRoomPageLoadsBeforeHost(t *testing.T) {
+	cfg := testConfig()
+	m := &Metrics{}
+	s := &Server{cfg: cfg, metrics: m, ip: newIPLimiter(cfg.MaxIPConns)}
+	s.room = newRoom(cfg, m)
+
+	req := httptest.NewRequest("GET", "http://example.test/room/123456", nil)
+	rec := httptest.NewRecorder()
+	s.publicRoomPage(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid pre-host room page status=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "Jawahar Live Sync") {
+		t.Fatalf("pre-host room page did not render guest UI")
+	}
+
+	badReq := httptest.NewRequest("GET", "http://example.test/room/not-a-code", nil)
+	badRec := httptest.NewRecorder()
+	s.publicRoomPage(badRec, badReq)
+	if badRec.Code != http.StatusNotFound {
+		t.Fatalf("invalid room code status=%d want=%d", badRec.Code, http.StatusNotFound)
+	}
+}
