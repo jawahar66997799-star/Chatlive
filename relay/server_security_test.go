@@ -60,17 +60,17 @@ func TestMetricsBearerProtection(t *testing.T) {
 }
 
 
-func TestPublicRoomPageRejectsWrongCode(t *testing.T) {
+func TestPublicRoomPageRejectsMalformedCode(t *testing.T) {
 	cfg := testConfig()
 	metrics := &Metrics{}
 	s := &Server{cfg: cfg, metrics: metrics, ip: newIPLimiter(cfg.MaxIPConns)}
 	s.room = newRoom(cfg, metrics)
 
-	req := httptest.NewRequest("GET", "http://example.test/room/111111", nil)
+	req := httptest.NewRequest("GET", "http://example.test/room/not-a-code", nil)
 	rec := httptest.NewRecorder()
 	s.publicRoomPage(rec, req)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("wrong public room code status=%d want=%d", rec.Code, http.StatusNotFound)
+		t.Fatalf("malformed public room code status=%d want=%d", rec.Code, http.StatusNotFound)
 	}
 }
 
