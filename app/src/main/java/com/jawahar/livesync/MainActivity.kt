@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         buildUi()
         refreshRoomUi()
+        handleRoomDeepLink(intent)
 
         if (CaptureStateStore.state.value.health == CaptureHealth.IDLE &&
             SessionState.consumeInterruptedSession(this)
@@ -91,6 +92,36 @@ class MainActivity : ComponentActivity() {
         }
 
         observeState()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleRoomDeepLink(intent)
+    }
+
+    private fun handleRoomDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (!data.scheme.equals("jls", ignoreCase = true) ||
+            !data.host.equals("host", ignoreCase = true)
+        ) {
+            return
+        }
+
+        val code = data.getQueryParameter("room").orEmpty().filter { it.isDigit() }
+        if (!RelayConfig.isValidPublicRoomCode(code)) {
+            renderError("Website room link is invalid. Expected a 6-digit room code.")
+            return
+        }
+
+        RelayConfig.savePublicRoomCode(this, code)
+        refreshRoomUi()
+        val running = isCaptureLikelyRunning(CaptureStateStore.state.value)
+        detail.text = if (running) {
+            "Room $code selected from website. STOP and START once to activate the new room code."
+        } else {
+            "Room $code selected from website. Tap START, then play YouTube."
+        }
     }
 
     private fun buildUi() {
